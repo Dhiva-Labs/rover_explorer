@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Rover Explorer
+GenericName=File Manager
+Comment=A Windows XP-style file explorer with instant search and a companion dog
+Exec=/usr/bin/rover-explorer %U
+Icon=rover-explorer
+Terminal=false
+Categories=Utility;FileTools;FileManager;System;
+Keywords=files;explorer;file manager;search;xp;rover;dhivalabs;
+StartupNotify=true
+StartupWMClass=rover_explorer
+MimeType=inode/directory;

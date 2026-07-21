@@ -1,0 +1,67 @@
+name: rover-explorer
+base: core22
+version: '1.0.0'
+summary: Windows XP-style file explorer with a search companion dog
+description: |
+  Rover Explorer is a file manager styled after the Windows XP Luna
+  interface, from the gradient toolbar and task panes down to the details
+  and icons views.
+
+  It ships an original animated search-companion dog who performs tricks
+  while idle, sniffs while searching and celebrates results, plus an
+  Everything-style indexed filename search: a background isolate keeps an
+  in-memory index of your home directory and answers ranked queries on every
+  keystroke, with no waiting and no crawling.
+
+  A Dhiva Labs project.
+
+grade: stable
+confinement: strict
+license: MIT
+website: https://github.com/Dhiva-Labs/rover_explorer
+issues: https://github.com/Dhiva-Labs/rover_explorer/issues
+icon: assets/icons/rover-explorer.png
+
+architectures:
+  - build-on: amd64
+
+apps:
+  rover-explorer:
+    command: rover_explorer
+    extensions: [gnome]
+    plugs:
+      - home
+      - removable-media
+      - audio-playback
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+      - unity7
+
+parts:
+  rover-explorer:
+    plugin: nil
+    source: .
+    build-packages:
+      - clang
+      - cmake
+      - ninja-build
+      - pkg-config
+      - libgtk-3-dev
+      - curl
+      - unzip
+      - xz-utils
+    override-build: |
+      set -eux
+      FLUTTER_DIR=$SNAPCRAFT_PART_BUILD/flutter
+      if [ ! -d "$FLUTTER_DIR" ]; then
+        git clone --depth 1 -b stable \
+          https://github.com/flutter/flutter.git "$FLUTTER_DIR"
+      fi
+      export PATH="$FLUTTER_DIR/bin:$PATH"
+      flutter config --no-analytics --enable-linux-desktop
+      flutter pub get
+      flutter build linux --release
+      mkdir -p $SNAPCRAFT_PART_INSTALL
+      cp -r build/linux/*/release/bundle/* $SNAPCRAFT_PART_INSTALL/
