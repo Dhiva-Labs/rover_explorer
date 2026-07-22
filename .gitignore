@@ -46,3 +46,6 @@ app.*.map.json
 
 # Release artifacts (published to GitHub Releases, not tracked)
 /dist/
+
+# Locally built snap artifacts
+*.snap

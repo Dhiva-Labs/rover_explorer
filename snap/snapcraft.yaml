@@ -54,6 +54,10 @@ parts:
       - xz-utils
     override-build: |
       set -eux
+      # The project directory is copied in wholesale, so a local release
+      # build would arrive with a CMakeCache.txt pointing at the host path
+      # and cmake would refuse to reuse it.
+      rm -rf build .dart_tool
       FLUTTER_DIR=$SNAPCRAFT_PART_BUILD/flutter
       if [ ! -d "$FLUTTER_DIR" ]; then
         git clone --depth 1 -b stable \

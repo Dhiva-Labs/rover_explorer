@@ -1,0 +1,38 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+# The Flutter bundle is prebuilt: Launchpad builders have no network access
+# to fetch the Flutter SDK, so the release bundle ships in the source package
+# and is only unpacked here.
+#
+# It ships as bundle.tar.gz rather than as a plain directory because
+# dpkg-source's default --tar-ignore patterns silently drop *.so files. As a
+# directory, libflutter_linux_gtk.so and libapp.so never reach the builder and
+# the resulting package installs but cannot start.
+override_dh_auto_configure:
+override_dh_auto_build:
+override_dh_auto_test:
+
+override_dh_auto_install:
+	mkdir -p debian/rover-explorer/opt/rover-explorer
+	tar -xzf bundle.tar.gz -C debian/rover-explorer/opt/rover-explorer
+	# Fail the build rather than ship a package that cannot launch.
+	test -f debian/rover-explorer/opt/rover-explorer/lib/libflutter_linux_gtk.so
+	test -f debian/rover-explorer/opt/rover-explorer/lib/libapp.so
+	mkdir -p debian/rover-explorer/usr/bin
+	printf '#!/bin/sh\nexec /opt/rover-explorer/rover_explorer "$$@"\n' \
+		> debian/rover-explorer/usr/bin/rover-explorer
+	chmod 755 debian/rover-explorer/usr/bin/rover-explorer
+	mkdir -p debian/rover-explorer/usr/share/applications
+	cp rover-explorer.desktop debian/rover-explorer/usr/share/applications/
+	mkdir -p debian/rover-explorer/usr/share/icons/hicolor/256x256/apps
+	cp rover-explorer.png \
+		debian/rover-explorer/usr/share/icons/hicolor/256x256/apps/
+
+# Prebuilt third-party libraries must not be stripped or dependency-scanned.
+override_dh_strip:
+override_dh_strip_nondeterminism:
+override_dh_shlibdeps:
+override_dh_dwz:

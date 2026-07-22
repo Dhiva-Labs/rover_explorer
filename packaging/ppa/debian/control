@@ -1,0 +1,17 @@
+Source: rover-explorer
+Section: utils
+Priority: optional
+Maintainer: Dhiva Labs <dhivakar1010@gmail.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/Dhiva-Labs/rover_explorer
+Rules-Requires-Root: no
+
+Package: rover-explorer
+Architecture: amd64
+Depends: ${misc:Depends}, libgtk-3-0, libglib2.0-0
+Description: Windows XP-style file explorer with a search companion dog
+ Rover Explorer is a file manager for Linux styled after the Windows XP
+ Luna interface. It ships an animated search-companion dog and an
+ Everything-style indexed filename search that returns ranked results on
+ every keystroke across hundreds of thousands of files.

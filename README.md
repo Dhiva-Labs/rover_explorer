@@ -98,6 +98,9 @@ flutter build linux --release
 # Debian package
 bash packaging/linux/build-deb.sh
 
+# Snap
+snapcraft pack
+
 # Windows
 flutter build windows --release
 iscc packaging\windows\rover-explorer.iss   # installer
@@ -127,7 +130,8 @@ flutter test
 | `lib/widgets/task_pane.dart` | Common Tasks sidebar |
 | `lib/dialogs/` | About, Properties, Folder Options |
 | `lib/xp/` | Luna palette, chrome widgets, dialog shell |
-| `packaging/` | Debian, Snap and Windows installer manifests |
+| `packaging/` | Debian, PPA and Windows installer manifests |
+| `snap/snapcraft.yaml` | Snap package manifest |
 
 The index cache lives in the platform application-support directory as
 `rover_index.txt`; delete it to force a cold rebuild.

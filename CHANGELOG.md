@@ -5,6 +5,27 @@ All notable changes to Rover Explorer are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Packaging fixes only — the application itself is unchanged from 1.0.0.
+
+### Fixed
+
+- Debian source packages for the PPA now ship the Flutter bundle as
+  `bundle.tar.gz`. As a plain directory, `dpkg-source`'s default
+  `--tar-ignore` patterns silently dropped `libflutter_linux_gtk.so` and
+  `libapp.so`, producing a package that installed but could not start
+  (`1.0.0~noble1`). `debian/rules` now asserts both libraries are present so
+  the build fails instead of shipping an unusable package.
+- The snap build no longer inherits a local `build/` directory, whose stale
+  `CMakeCache.txt` pointed at the host path and made CMake refuse the
+  in-container build.
+
+### Changed
+
+- The snapcraft manifest moved to the canonical `snap/snapcraft.yaml`.
+- Debian packaging for the PPA added under `packaging/ppa/`.
+
 ## [1.0.0] - 2026-07-22
 
 First public release.
