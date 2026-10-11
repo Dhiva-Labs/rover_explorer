@@ -26,11 +26,13 @@ class SoundService {
       final f = _woofPath!;
       if (Platform.isWindows) {
         // PlaySync: Play() returns at once and PowerShell would exit,
-        // cutting the bark off before it is heard.
+        // cutting the bark off before it is heard. A ' in the path (a user
+        // name like O'Neil) is doubled for the single-quoted string.
+        final quoted = f.replaceAll("'", "''");
         await Process.start('powershell', [
           '-NoProfile',
           '-c',
-          "(New-Object Media.SoundPlayer '$f').PlaySync()",
+          "(New-Object Media.SoundPlayer '$quoted').PlaySync()",
         ]);
         return;
       }
