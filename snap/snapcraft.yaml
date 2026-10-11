@@ -29,6 +29,11 @@ apps:
   rover-explorer:
     command: rover_explorer
     extensions: [gnome]
+    # snapd points HOME at the snap's private data dir; a file manager has to
+    # open and index the real home instead. Settings still go to the snap's
+    # own XDG dirs through path_provider.
+    environment:
+      HOME: $SNAP_REAL_HOME
     plugs:
       - home
       - removable-media
