@@ -137,6 +137,11 @@ flutter test
 The index cache lives in the platform application-support directory as
 `rover_index.txt`; delete it to force a cold rebuild.
 
+## Privacy
+
+Rover Explorer works offline and sends nothing anywhere. See
+[PRIVACY.md](PRIVACY.md).
+
 ## Licence
 
 MIT — see [LICENSE](LICENSE). Rover Explorer is an independent project and is
