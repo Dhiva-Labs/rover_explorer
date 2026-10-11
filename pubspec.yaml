@@ -36,6 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   path: ^1.9.1
   path_provider: ^2.1.6
+  ffi: ^2.2.0
 
 dev_dependencies:
   flutter_test:
@@ -47,6 +48,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  msix: ^3.18.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -87,3 +89,18 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# Microsoft Store package (`dart run msix:create --store`). The identity values
+# come from Partner Center > Product identity; the Store signs the package.
+msix_config:
+  display_name: Rover Explorer
+  publisher_display_name: Dhiva-Labs
+  identity_name: Dhiva-Labs.RoverExplorer
+  publisher: CN=0F69015A-AA5B-431D-970A-165099309E53
+  msix_version: 1.0.0.0
+  logo_path: packaging/windows/rover-explorer-logo.png
+  output_name: RoverExplorer
+  languages: en-us
+  # A local file manager: no network access. runFullTrust is always added.
+  capabilities: ""
+  store: true

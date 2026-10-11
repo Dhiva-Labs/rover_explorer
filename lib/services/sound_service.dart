@@ -25,10 +25,12 @@ class SoundService {
       await _ensureExtracted();
       final f = _woofPath!;
       if (Platform.isWindows) {
+        // PlaySync: Play() returns at once and PowerShell would exit,
+        // cutting the bark off before it is heard.
         await Process.start('powershell', [
           '-NoProfile',
           '-c',
-          "(New-Object Media.SoundPlayer '$f').Play()",
+          "(New-Object Media.SoundPlayer '$f').PlaySync()",
         ]);
         return;
       }

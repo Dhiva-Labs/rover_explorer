@@ -83,9 +83,7 @@ class _FolderTreePaneState extends State<FolderTreePane> {
           Directory(node.path)
               .listSync(followLinks: false)
               .whereType<Directory>()
-              .where(
-                (d) => widget.showHidden || !p.basename(d.path).startsWith('.'),
-              )
+              .where((d) => widget.showHidden || !FsService.isHidden(d.path))
               .toList()
             ..sort(
               (a, b) => p

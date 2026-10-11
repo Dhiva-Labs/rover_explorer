@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../models/file_entry.dart';
+import 'win_attributes.dart';
 
 /// Plain filesystem operations: listing, drives, open-with-OS, clipboard ops.
 class FsService {
@@ -13,13 +14,35 @@ class FsService {
 
   static String get rootDir => Platform.isWindows ? 'C:\\' : '/';
 
+  static List<String>? _drivesCache;
+  static DateTime _drivesCachedAt = DateTime.fromMillisecondsSinceEpoch(0);
+
   /// On Windows, enumerate available drive letters. On Linux, common mounts.
+  ///
+  /// Called from widget builds, so the result is cached for a few seconds:
+  /// probing 26 drive letters (or a slow network mount) on every rebuild
+  /// would stall the UI.
   static List<String> drives() {
+    final now = DateTime.now();
+    final cached = _drivesCache;
+    if (cached != null && now.difference(_drivesCachedAt).inSeconds < 5) {
+      return cached;
+    }
+    _drivesCachedAt = now;
+    return _drivesCache = _probeDrives();
+  }
+
+  static List<String> _probeDrives() {
     if (Platform.isWindows) {
       final out = <String>[];
       for (var c = 'A'.codeUnitAt(0); c <= 'Z'.codeUnitAt(0); c++) {
-        final letter = String.fromCharCode(c);
-        if (Directory('$letter:\\').existsSync()) out.add('$letter:\\');
+        final root = '${String.fromCharCode(c)}:\\';
+        try {
+          if (Directory(root).existsSync()) out.add(root);
+        } on FileSystemException {
+          // A drive with no media (empty card reader or DVD drive) throws
+          // "The device is not ready" instead of reporting false.
+        }
       }
       return out;
     }
@@ -43,15 +66,16 @@ class FsService {
   static List<FileEntry> list(String dir, {bool showHidden = false}) {
     final entries = <FileEntry>[];
     for (final e in Directory(dir).listSync(followLinks: false)) {
-      final name = p.basename(e.path);
-      if (!showHidden && _isHidden(name)) continue;
+      if (!showHidden && isHidden(e.path)) continue;
       final fe = FileEntry.fromEntity(e);
       if (fe != null) entries.add(fe);
     }
     return entries;
   }
 
-  static bool _isHidden(String name) => name.startsWith('.');
+  /// Dotfiles everywhere, plus items with the hidden attribute on Windows.
+  static bool isHidden(String path) =>
+      p.basename(path).startsWith('.') || WinAttributes.isHidden(path);
 
   static Future<void> openWithOs(String path) async {
     if (Platform.isWindows) {

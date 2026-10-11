@@ -4,6 +4,8 @@ import 'dart:isolate';
 
 import 'package:path/path.dart' as p;
 
+import 'win_attributes.dart';
+
 /// One search hit. Size/date are stat'd lazily by the UI, not stored in the
 /// index — keeping the index to (path, name, isDir) is what makes a full
 /// home-directory index cheap enough to hold in RAM and scan per keystroke.
@@ -296,6 +298,8 @@ Future<void> _walk() async {
       for (final e in children) {
         final name = p.basename(e.path);
         if (name.startsWith('.')) continue; // hidden files/dirs
+        // Windows hides with an attribute instead (AppData, NTUSER.DAT...).
+        if (WinAttributes.isHidden(e.path)) continue;
         final isDir = e is Directory;
         if (isDir && p.dirname(e.path) == '/' && _skipDirNames.contains(name)) {
           continue;

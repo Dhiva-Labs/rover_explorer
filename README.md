@@ -104,6 +104,7 @@ snapcraft pack
 # Windows
 flutter build windows --release
 iscc packaging\windows\rover-explorer.iss   # installer
+dart run msix:create --store                # Microsoft Store package (.msix)
 ```
 
 ## Development

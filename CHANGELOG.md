@@ -7,9 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Packaging fixes only — the application itself is unchanged from 1.0.0.
+Packaging work and Windows fixes.
+
+### Added
+
+- Microsoft Store packaging: an `msix_config` block in `pubspec.yaml`
+  (`dart run msix:create --store` builds the unsigned Store package) and a
+  1024 px logo at `packaging/windows/rover-explorer-logo.png`.
+- The Windows executable now carries the Rover icon instead of the default
+  Flutter one.
 
 ### Fixed
+
+- Windows: the window came up empty (a grey area below the address bar) on
+  machines with a card reader or DVD drive and no media in it. Probing that
+  drive letter throws "The device is not ready", which failed the task pane
+  and folder tree builds; such drives are now skipped. The drive list is also
+  cached for a few seconds instead of being probed on every rebuild.
+- Windows: files and folders with the hidden attribute (`AppData`,
+  `NTUSER.DAT`, `desktop.ini`, the legacy profile junctions) are treated like
+  dotfiles: hidden unless "show hidden files" is on, and kept out of the
+  search index.
+- Windows: the bark was cut off before it was heard, because
+  `SoundPlayer.Play()` returns immediately and PowerShell exited with it. It
+  now uses `PlaySync()`.
 
 - Debian source packages for the PPA now ship the Flutter bundle as
   `bundle.tar.gz`. As a plain directory, `dpkg-source`'s default
