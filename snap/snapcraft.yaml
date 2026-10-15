@@ -24,6 +24,7 @@ icon: assets/icons/rover-explorer.png
 
 architectures:
   - build-on: amd64
+  - build-on: arm64
 
 apps:
   rover-explorer:
