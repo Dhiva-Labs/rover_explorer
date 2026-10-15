@@ -11,6 +11,14 @@ Packaging work and Windows fixes.
 
 ### Added
 
+- Linux and Windows ARM64 builds. CI builds, tests and smoke-runs the app on
+  native x64 and arm64 runners, and each release now also carries
+  `rover-explorer-<version>-linux-arm64.tar.gz`,
+  `rover-explorer_<version>_arm64.deb`,
+  `rover-explorer-<version>-windows-arm64.zip` and
+  `RoverExplorer-<version>-arm64-setup.exe`, all listed in `SHA256SUMS.txt`.
+  The snap and the Microsoft Store package (`--architecture arm64`) build for
+  arm64 too.
 - Microsoft Store packaging: an `msix_config` block in `pubspec.yaml`
   (`dart run msix:create --store` builds the unsigned Store package) and a
   1024 px logo at `packaging/windows/rover-explorer-logo.png`.

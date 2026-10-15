@@ -1,106 +1,291 @@
 name: Release
 
+# Pushing a v* tag builds the Linux and Windows packages for x64 and arm64
+# and publishes them as a GitHub Release with a SHA256SUMS.txt:
+#
+#   rover-explorer-<v>-linux-<x64|arm64>.tar.gz
+#   rover-explorer_<v>_<amd64|arm64>.deb
+#   rover-explorer-<v>-windows-<x64|arm64>.zip
+#   RoverExplorer-<v>-setup.exe          (x64)
+#   RoverExplorer-<v>-arm64-setup.exe    (arm64)
+#
+# Pull requests run every build and check, and stop before publishing, so a
+# change to the release path is proven before a tag needs it.
+
 on:
   push:
     tags: ['v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
         description: 'Tag to build (e.g. v1.0.0)'
         required: true
 
-env:
-  FLUTTER_VERSION: '3.44.6'
-
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # There are no Flutter SDK archives for linux-arm64 or windows-arm64, so
+  # every leg installs the SDK the same way: a shallow clone of the release
+  # tag.
+  FLUTTER_VERSION: '3.44.6'
 
 jobs:
   linux:
-    name: Linux packages
-    runs-on: ubuntu-latest
+    name: Linux packages (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            deb_arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            deb_arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      BUNDLE: build/linux/${{ matrix.arch }}/release/bundle
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
+      - name: Read the version from pubspec.yaml
+        run: |
+          VERSION="$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//' | cut -d+ -f1)"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pubspec.yaml version $VERSION"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
+      # xvfb, xauth, xdotool, dbus-x11: the smoke run of the tarball.
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libgtk-3-dev fuse libfuse2
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            file xvfb xauth xdotool dbus-x11
+
+      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
+        run: |
+          git clone --depth 1 --branch "$FLUTTER_VERSION" \
+            https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Flutter
+        run: |
+          uname -m
+          flutter config --no-analytics --enable-linux-desktop
+          flutter precache --linux
+          flutter --version
+          dart --version
 
       - run: flutter pub get
       - run: flutter build linux --release
+
+      - name: Assert every ELF file in the bundle is ${{ matrix.arch }}
+        run: |
+          packaging/ci/assert-elf-arch.sh "$BUNDLE" ${{ matrix.arch }} \
+            rover_explorer lib/libapp.so lib/libflutter_linux_gtk.so
+
       - run: bash packaging/linux/build-deb.sh
 
       - name: Portable tarball
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          tar -czf "dist/rover-explorer-${VERSION}-linux-x64.tar.gz" \
-            -C build/linux/x64/release/bundle .
+          tar -czf "dist/rover-explorer-${VERSION}-linux-${{ matrix.arch }}.tar.gz" \
+            -C "$BUNDLE" .
 
-      - uses: actions/upload-artifact@v4
+      - name: Check the packages
+        run: |
+          TARBALL="dist/rover-explorer-${VERSION}-linux-${{ matrix.arch }}.tar.gz"
+          DEB="dist/rover-explorer_${VERSION}_${{ matrix.deb_arch }}.deb"
+          ls -l dist
+          [ "$(ls dist | wc -l)" -eq 2 ]
+          mkdir "$RUNNER_TEMP/tarball" "$RUNNER_TEMP/deb"
+          tar -xzf "$TARBALL" -C "$RUNNER_TEMP/tarball"
+          packaging/ci/assert-elf-arch.sh "$RUNNER_TEMP/tarball" ${{ matrix.arch }} \
+            rover_explorer lib/libapp.so lib/libflutter_linux_gtk.so
+          dpkg-deb --info "$DEB"
+          [ "$(dpkg-deb --field "$DEB" Architecture)" = "${{ matrix.deb_arch }}" ]
+          dpkg-deb --extract "$DEB" "$RUNNER_TEMP/deb"
+          packaging/ci/assert-elf-arch.sh "$RUNNER_TEMP/deb/opt/rover-explorer" ${{ matrix.arch }} \
+            rover_explorer lib/libapp.so lib/libflutter_linux_gtk.so
+
+      - name: Smoke-run the tarball (Xvfb)
+        timeout-minutes: 5
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            dbus-run-session -- packaging/ci/smoke-linux.sh "$RUNNER_TEMP/tarball/rover_explorer"
+
+      - uses: actions/upload-artifact@v7
         with:
-          name: linux-artifacts
+          name: linux-artifacts-${{ matrix.arch }}
           path: dist/*
+          if-no-files-found: error
 
   windows:
-    name: Windows installer
-    runs-on: windows-latest
+    name: Windows installer (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      ARCH: ${{ matrix.arch }}
+      RELEASE_DIR: build\windows\${{ matrix.arch }}\runner\Release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
+      - name: Read the version from pubspec.yaml
+        run: |
+          $version = ((Select-String -Path pubspec.yaml -Pattern '^version:\s*(\S+)').Matches[0].Groups[1].Value -split '\+')[0]
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "tag $env:GITHUB_REF_NAME does not match pubspec.yaml version $version"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$version"
+
+      # On an ARM64 host (PROCESSOR_ARCHITECTURE=ARM64) the bootstrap fetches
+      # the arm64 Dart SDK and `flutter build windows` targets windows-arm64.
+      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          git clone --depth 1 --branch $env:FLUTTER_VERSION `
+            https://github.com/flutter/flutter.git "$env:RUNNER_TEMP\flutter"
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\flutter\bin"
+
+      - name: Configure Flutter
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
+          flutter config --no-analytics --enable-windows-desktop
+          flutter precache --windows
+          flutter --version
+          dart --version
 
       - run: flutter pub get
       - run: flutter build windows --release
 
+      - name: Assert every PE file is ${{ matrix.arch }}
+        run: ./packaging/ci/assert-pe-arch.ps1 -Dir $env:RELEASE_DIR -Arch $env:ARCH
+
+      # The arm64 installer needs Inno Setup 6.3 or newer. The x64 image ships
+      # it; install it where the image does not.
+      - name: Install Inno Setup
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed with exit code $LASTEXITCODE" }
+          }
+          if (-not (Test-Path $iscc)) { throw "$iscc not found" }
+          Add-Content -Path $env:GITHUB_ENV -Value "ISCC=$iscc"
+          (Get-Item $iscc).VersionInfo.ProductVersion
+
       - name: Build installer
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
-            packaging\windows\rover-explorer.iss
+          & $env:ISCC "/DArch=$env:ARCH" "/DAppVersion=$env:VERSION" packaging\windows\rover-explorer.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed with exit code $LASTEXITCODE" }
 
       - name: Portable ZIP
-        shell: pwsh
         run: |
-          $version = "${env:GITHUB_REF_NAME}" -replace '^v',''
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path build\windows\x64\runner\Release\* `
-            -DestinationPath "dist\rover-explorer-$version-windows-x64.zip"
+          $zip = Join-Path (Resolve-Path dist).Path "rover-explorer-$env:VERSION-windows-$env:ARCH.zip"
+          [IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path $env:RELEASE_DIR).Path, $zip,
+            [IO.Compression.CompressionLevel]::Optimal, $false)
 
-      - uses: actions/upload-artifact@v4
+      - name: Check the packages
+        run: |
+          $setup = if ($env:ARCH -eq 'x64') { "RoverExplorer-$env:VERSION-setup.exe" } else { "RoverExplorer-$env:VERSION-$env:ARCH-setup.exe" }
+          $zip = "rover-explorer-$env:VERSION-windows-$env:ARCH.zip"
+          Get-ChildItem dist | Format-Table Name, Length
+          if ((Get-ChildItem dist).Count -ne 2) { throw 'expected exactly one installer and one zip in dist' }
+          foreach ($f in $setup, $zip) { if (-not (Test-Path "dist\$f")) { throw "dist\$f is missing" } }
+
+          # The zip holds the app, built for this architecture.
+          $unzipped = Join-Path $env:RUNNER_TEMP 'rover-unzipped'
+          Expand-Archive -Path "dist\$zip" -DestinationPath $unzipped
+          ./packaging/ci/assert-pe-arch.ps1 -Dir $unzipped -Arch $env:ARCH
+
+          # Install with the installer, then check and start what it installed.
+          $installDir = Join-Path $env:RUNNER_TEMP 'rover-installed'
+          $log = Join-Path $env:RUNNER_TEMP 'setup.log'
+          $p = Start-Process -FilePath "dist\$setup" -Wait -PassThru -ArgumentList `
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir", "/LOG=$log"
+          if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "installer exited with code $($p.ExitCode)" }
+          ./packaging/ci/assert-pe-arch.ps1 -Dir $installDir -Arch $env:ARCH -IgnoreUninstaller
+          ./packaging/ci/smoke-windows.ps1 -Exe "$installDir\rover_explorer.exe"
+
+      - uses: actions/upload-artifact@v7
         with:
-          name: windows-artifacts
+          name: windows-artifacts-${{ matrix.arch }}
           path: dist/*
+          if-no-files-found: error
 
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs: [linux, windows]
+    # The only job that can write to the repository. Pull requests and manual
+    # runs go through the same steps and stop before the release is created.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
       - name: Collect files and checksums
         run: |
+          VERSION="$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//' | cut -d+ -f1)"
           mkdir -p dist
           find artifacts -type f \
             \( -name '*.deb' -o -name '*.zip' -o -name '*.tar.gz' \
                -o -name '*setup.exe' \) -exec cp {} dist/ \;
+          cat > expected.txt <<EOF
+          RoverExplorer-${VERSION}-arm64-setup.exe
+          RoverExplorer-${VERSION}-setup.exe
+          rover-explorer-${VERSION}-linux-arm64.tar.gz
+          rover-explorer-${VERSION}-linux-x64.tar.gz
+          rover-explorer-${VERSION}-windows-arm64.zip
+          rover-explorer-${VERSION}-windows-x64.zip
+          rover-explorer_${VERSION}_amd64.deb
+          rover-explorer_${VERSION}_arm64.deb
+          EOF
+          LC_ALL=C sort expected.txt -o expected.txt
+          ls dist | LC_ALL=C sort > found.txt
+          if ! diff expected.txt found.txt; then
+            echo "::error::the release assets are not the expected set"
+            exit 1
+          fi
           cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
 
       - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           files: dist/*
+          # Never replace an asset that is already on the release: a release
+          # that was published with only notes or only some assets gets the
+          # missing files added and the rest left alone.
+          overwrite_files: false
           generate_release_notes: true
           body_path: CHANGELOG.md

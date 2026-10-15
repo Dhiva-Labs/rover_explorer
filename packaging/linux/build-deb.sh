@@ -4,8 +4,9 @@
 #
 #   packaging/linux/build-deb.sh [version]
 #
-# The release bundle must already exist (flutter build linux --release).
-# Output: dist/rover-explorer_<version>_amd64.deb
+# The release bundle must already exist (flutter build linux --release). The
+# package is built for the machine's architecture: amd64 or arm64.
+# Output: dist/rover-explorer_<version>_<amd64|arm64>.deb
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -13,7 +14,15 @@ cd "$REPO_ROOT"
 
 VERSION="${1:-$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//' | cut -d+ -f1)}"
 ARCH="$(dpkg --print-architecture)"
-BUNDLE="build/linux/x64/release/bundle"
+case "$ARCH" in
+  amd64) FLUTTER_ARCH=x64 ;;
+  arm64) FLUTTER_ARCH=arm64 ;;
+  *)
+    echo "error: unsupported architecture '$ARCH' (amd64 or arm64)" >&2
+    exit 1
+    ;;
+esac
+BUNDLE="build/linux/${FLUTTER_ARCH}/release/bundle"
 STAGE="build/deb/rover-explorer_${VERSION}_${ARCH}"
 
 if [[ ! -x "$BUNDLE/rover_explorer" ]]; then

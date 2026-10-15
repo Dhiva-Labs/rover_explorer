@@ -1,5 +1,12 @@
 name: CI
 
+# Analyzes and tests the code, then builds, tests and smoke-runs the Linux and
+# Windows desktop apps for x64 and arm64, each on a native runner: Flutter
+# cannot cross-compile either desktop target, so every architecture is built
+# on a machine of that architecture. The snap jobs build the amd64 and arm64
+# snaps the same way. Packages stay as workflow artifacts; release.yml
+# publishes the release assets.
+
 on:
   push:
     branches: [main]
@@ -7,7 +14,17 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
+  # There are no Flutter SDK archives for linux-arm64 or windows-arm64, so
+  # the desktop build legs install the SDK the same way on every
+  # architecture: a shallow clone of the release tag.
   FLUTTER_VERSION: '3.44.6'
 
 jobs:
@@ -40,53 +57,236 @@ jobs:
         run: flutter test --reporter expanded
 
   build-linux:
-    name: Build Linux
-    runs-on: ubuntu-latest
+    name: Build Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     needs: analyze-and-test
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            deb_arch: amd64
+            runner: ubuntu-24.04
+            elf_machine: x86-64
+          - arch: arm64
+            deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            elf_machine: ARM aarch64
+    env:
+      BUNDLE: build/linux/${{ matrix.arch }}/release/bundle
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Install Linux build dependencies
+      # xvfb, xauth, xdotool, dbus-x11: the smoke run of the installed .deb.
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libgtk-3-dev
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            file xvfb xauth xdotool dbus-x11
+
+      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
+        run: |
+          git clone --depth 1 --branch "$FLUTTER_VERSION" \
+            https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Flutter
+        run: |
+          uname -m
+          flutter config --no-analytics --enable-linux-desktop
+          flutter precache --linux
+          flutter --version
+          dart --version
 
       - run: flutter pub get
+
+      - name: Test
+        run: flutter test
+
       - run: flutter build linux --release
+
+      - name: Assert every ELF file in the bundle is ${{ matrix.elf_machine }}
+        run: |
+          packaging/ci/assert-elf-arch.sh "$BUNDLE" ${{ matrix.arch }} \
+            rover_explorer lib/libapp.so lib/libflutter_linux_gtk.so
 
       - name: Build Debian package
         run: bash packaging/linux/build-deb.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: Check the Debian package
+        run: |
+          VERSION="$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//' | cut -d+ -f1)"
+          DEB="dist/rover-explorer_${VERSION}_${{ matrix.deb_arch }}.deb"
+          ls -l dist
+          [ "$(ls dist | wc -l)" -eq 1 ]
+          dpkg-deb --info "$DEB"
+          [ "$(dpkg-deb --field "$DEB" Architecture)" = "${{ matrix.deb_arch }}" ]
+          sudo apt-get install -y "./$DEB"
+          file /opt/rover-explorer/rover_explorer | tee /dev/stderr | grep "${{ matrix.elf_machine }}"
+
+      - name: Smoke-run the installed app (Xvfb)
+        timeout-minutes: 5
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            dbus-run-session -- packaging/ci/smoke-linux.sh rover-explorer
+
+      - uses: actions/upload-artifact@v7
         with:
-          name: rover-explorer-linux
+          name: rover-explorer-linux-${{ matrix.arch }}
           path: dist/*.deb
           if-no-files-found: error
 
   build-windows:
-    name: Build Windows
-    runs-on: windows-latest
+    name: Build Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     needs: analyze-and-test
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      ARCH: ${{ matrix.arch }}
+      RELEASE_DIR: build\windows\${{ matrix.arch }}\runner\Release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
+      # On an ARM64 host (PROCESSOR_ARCHITECTURE=ARM64) the bootstrap fetches
+      # the arm64 Dart SDK and `flutter build windows` targets windows-arm64.
+      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          git clone --depth 1 --branch $env:FLUTTER_VERSION `
+            https://github.com/flutter/flutter.git "$env:RUNNER_TEMP\flutter"
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\flutter\bin"
+
+      - name: Configure Flutter
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
+          flutter config --no-analytics --enable-windows-desktop
+          flutter precache --windows
+          flutter --version
+          dart --version
 
       - run: flutter pub get
+
+      - name: Test
+        run: flutter test
+
       - run: flutter build windows --release
 
-      - uses: actions/upload-artifact@v4
+      - name: Assert every PE file is ${{ matrix.arch }}
+        run: ./packaging/ci/assert-pe-arch.ps1 -Dir $env:RELEASE_DIR -Arch $env:ARCH
+
+      - name: Smoke-run the release build
+        timeout-minutes: 5
+        run: ./packaging/ci/smoke-windows.ps1 -Exe "$env:RELEASE_DIR\rover_explorer.exe"
+
+      - uses: actions/upload-artifact@v7
         with:
-          name: rover-explorer-windows
-          path: build/windows/x64/runner/Release/
+          name: rover-explorer-windows-${{ matrix.arch }}
+          path: build/windows/${{ matrix.arch }}/runner/Release/
+          if-no-files-found: error
+
+      # The unsigned Microsoft Store package; the Store signs it. msix:create
+      # assumes x64 unless told otherwise. The x64 file keeps the name from
+      # msix_config. It runs after the upload above because it copies the
+      # Visual C++ runtime into the Release folder.
+      - name: Build the Microsoft Store package
+        run: |
+          $name = if ($env:ARCH -eq 'x64') { 'RoverExplorer' } else { "RoverExplorer-$env:ARCH" }
+          dart run msix:create --store --architecture $env:ARCH --build-windows false `
+            --output-path dist --output-name $name
+          if ($LASTEXITCODE -ne 0) { throw "msix:create failed with exit code $LASTEXITCODE" }
+
+      - name: Check the Microsoft Store package
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $expected = if ($env:ARCH -eq 'x64') { 0x8664 } else { 0xAA64 }
+          $name = if ($env:ARCH -eq 'x64') { 'RoverExplorer' } else { "RoverExplorer-$env:ARCH" }
+          Get-ChildItem dist | Format-Table Name, Length
+          if ((Get-ChildItem dist).Count -ne 1) { throw 'expected exactly one msix in dist' }
+          $msix = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "dist\$name.msix"))
+          try {
+            $reader = New-Object IO.StreamReader($msix.GetEntry('AppxManifest.xml').Open())
+            $manifest = [xml]$reader.ReadToEnd()
+            $reader.Dispose()
+            $id = $manifest.Package.Identity
+            "msix identity: Name=$($id.Name) Version=$($id.Version) ProcessorArchitecture=$($id.ProcessorArchitecture) Publisher=$($id.Publisher)"
+            if ($id.ProcessorArchitecture -ne $env:ARCH) { throw "msix ProcessorArchitecture is $($id.ProcessorArchitecture)" }
+            if ($id.Name -ne 'Dhiva-Labs.RoverExplorer') { throw "msix identity is $($id.Name)" }
+            if ($id.Publisher -ne 'CN=0F69015A-AA5B-431D-970A-165099309E53') { throw "msix publisher is $($id.Publisher)" }
+            $tmp = Join-Path $env:RUNNER_TEMP 'msix_rover_explorer.exe'
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($msix.GetEntry('rover_explorer.exe'), $tmp, $true)
+            $fs = [IO.File]::OpenRead($tmp)
+            try {
+              $br = New-Object IO.BinaryReader($fs)
+              $fs.Position = 0x3C
+              $fs.Position = $br.ReadInt32()
+              if ($br.ReadUInt32() -ne 0x4550) { throw 'rover_explorer.exe in the msix is not a PE file' }
+              $m = [int]$br.ReadUInt16()
+            } finally { $fs.Dispose() }
+            'msix: rover_explorer.exe 0x{0:X4}' -f $m
+            if ($m -ne $expected) { throw 'msix holds the wrong architecture' }
+          } finally { $msix.Dispose() }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rover-explorer-msix-${{ matrix.arch }}
+          path: dist/*.msix
+          if-no-files-found: error
+
+  snap:
+    name: Snap ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    needs: analyze-and-test
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            elf_machine: x86-64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            elf_machine: ARM aarch64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: snapcore/action-build@v1
+        id: build
+
+      - name: Assert the snap is ${{ matrix.arch }}
+        env:
+          SNAP_FILE: ${{ steps.build.outputs.snap }}
+          ELF_MACHINE: ${{ matrix.elf_machine }}
+        run: |
+          ls -l "$SNAP_FILE"
+          case "$SNAP_FILE" in
+            *_${{ matrix.arch }}.snap) ;;
+            *) echo "::error::unexpected snap file name $SNAP_FILE"; exit 1 ;;
+          esac
+          command -v unsquashfs > /dev/null || sudo apt-get install -y squashfs-tools
+          unsquashfs -q -d "$RUNNER_TEMP/snap" "$SNAP_FILE" meta/snap.yaml rover_explorer
+          sed -n '/^architectures:/,/^[a-z]/p' "$RUNNER_TEMP/snap/meta/snap.yaml"
+          grep -qx -- '- ${{ matrix.arch }}' "$RUNNER_TEMP/snap/meta/snap.yaml"
+          file "$RUNNER_TEMP/snap/rover_explorer" | tee /dev/stderr | grep -q "$ELF_MACHINE"
+
+      # Built here to prove it builds; upload to the Snap Store by hand.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rover-explorer-snap-${{ matrix.arch }}
+          path: ${{ steps.build.outputs.snap }}
           if-no-files-found: error

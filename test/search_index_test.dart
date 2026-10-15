@@ -113,13 +113,22 @@ void main() {
     final cache = p.join(root.path, '.cache', 'index.txt');
     expect(File(cache).existsSync(), isTrue);
 
+    // Starting a service also starts a rescan, which rewrites the cache. Wait
+    // for it before disposing: killing the isolate mid-write leaves the file
+    // open, and Windows then refuses to delete the folder in tearDown.
     final second = SearchIndexService();
+    var scanned = false;
+    final rescanned = second.status.firstWhere((s) {
+      if (s.scanning) scanned = true;
+      return scanned && !s.scanning;
+    });
     await second.start(roots: [root.path], cacheFile: cache);
     final id = second.query('budget');
     final r = await second.results
         .firstWhere((x) => x.queryId == id)
         .timeout(const Duration(seconds: 10));
     expect(r.hits.single.name, 'budget.xlsx');
+    await rescanned.timeout(const Duration(seconds: 10));
     second.dispose();
   });
 }

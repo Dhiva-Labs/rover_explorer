@@ -325,8 +325,10 @@ Future<void> _walk() async {
     ..namesLower.addAll(fresh.namesLower)
     ..isDirs.addAll(fresh.isDirs);
   _scanning = false;
-  _sendStatus();
+  // Saved before announcing the finished scan, so "scan done" also means the
+  // cache file is written and no longer open.
   await _saveCache();
+  _sendStatus();
 }
 
 bool _kindMatches(int kind, int i) {
