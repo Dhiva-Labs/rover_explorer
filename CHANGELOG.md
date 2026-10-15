@@ -5,9 +5,9 @@ All notable changes to Rover Explorer are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.1] - 2026-10-16
 
-Packaging work and Windows fixes.
+Linux and Windows ARM64 builds, Windows fixes and packaging work.
 
 ### Added
 
@@ -24,6 +24,7 @@ Packaging work and Windows fixes.
   1024 px logo at `packaging/windows/rover-explorer-logo.png`.
 - The Windows executable now carries the Rover icon instead of the default
   Flutter one.
+- A privacy policy (`PRIVACY.md`).
 
 ### Fixed
 
@@ -39,13 +40,22 @@ Packaging work and Windows fixes.
 - Windows: the bark was cut off before it was heard, because
   `SoundPlayer.Play()` returns immediately and PowerShell exited with it. It
   now uses `PlaySync()`.
-
+- Windows: the bark stayed silent when the temp path contained an apostrophe
+  (for example a user name like `O'Neil`).
+- The indexer writes its cache file before it reports the scan as finished,
+  so "done" means the cache is on disk. Before, anything that acted right
+  after the status changed (a test, or deleting the indexed folder) raced the
+  write and could find no cache or a file still in use.
 - Debian source packages for the PPA now ship the Flutter bundle as
   `bundle.tar.gz`. As a plain directory, `dpkg-source`'s default
   `--tar-ignore` patterns silently dropped `libflutter_linux_gtk.so` and
   `libapp.so`, producing a package that installed but could not start
   (`1.0.0~noble1`). `debian/rules` now asserts both libraries are present so
   the build fails instead of shipping an unusable package.
+- Snap: under strict confinement Rover opened and indexed the snap's private
+  data directory instead of your home folder. The app now gets
+  `HOME=$SNAP_REAL_HOME`, and the snap ships a `.desktop` file so it appears
+  in the application menu.
 - The snap build no longer inherits a local `build/` directory, whose stale
   `CMakeCache.txt` pointed at the host path and made CMake refuse the
   in-container build.
@@ -89,4 +99,5 @@ First public release.
 - Packaging for Debian (`.deb`), Snap, and Windows (Inno Setup), plus GitHub
   Actions workflows for CI and releases.
 
+[1.0.1]: https://github.com/Dhiva-Labs/rover_explorer/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Dhiva-Labs/rover_explorer/releases/tag/v1.0.0

@@ -1,6 +1,6 @@
 name: rover-explorer
 base: core22
-version: '1.0.0'
+version: '1.0.1'
 summary: Windows XP-style file explorer with a search companion dog
 description: |
   Rover Explorer is a file manager styled after the Windows XP Luna

@@ -8,8 +8,8 @@ class AppInfo {
 
   static const String name = 'Rover Explorer';
   static const String vendor = 'Dhiva Labs';
-  static const String version = '1.0.0';
-  static const String buildNumber = '1';
+  static const String version = '1.0.1';
+  static const String buildNumber = '2';
   static const String copyright = 'Copyright © 2026 Dhiva Labs';
   static const String tagline =
       'A Windows XP-style file explorer with the Rover search companion';
