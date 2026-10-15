@@ -8,6 +8,10 @@
 
 A [Dhiva Labs](https://github.com/Dhiva-Labs) project · MIT licensed
 
+[![ARM64 builds](https://github.com/Dhiva-Labs/rover_explorer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Dhiva-Labs/rover_explorer/actions/workflows/ci.yml)
+![Linux x64 | arm64](https://img.shields.io/badge/Linux-x64%20%7C%20arm64-informational?logo=linux&logoColor=white)
+![Windows x64 | arm64](https://img.shields.io/badge/Windows-x64%20%7C%20arm64-informational?logo=windows&logoColor=white)
+
 </div>
 
 ---
@@ -74,15 +78,29 @@ turns up with a bone.
 
 ## Install
 
+Releases after 1.0.0 carry x64 and arm64 builds, with a `SHA256SUMS.txt`
+(1.0.0 itself is x64 only):
+
+| Platform | x64 | arm64 |
+|---|---|---|
+| Debian / Ubuntu | `rover-explorer_<version>_amd64.deb` | `rover-explorer_<version>_arm64.deb` |
+| Linux portable | `rover-explorer-<version>-linux-x64.tar.gz` | `rover-explorer-<version>-linux-arm64.tar.gz` |
+| Windows installer | `RoverExplorer-<version>-setup.exe` | `RoverExplorer-<version>-arm64-setup.exe` |
+| Windows portable | `rover-explorer-<version>-windows-x64.zip` | `rover-explorer-<version>-windows-arm64.zip` |
+
 ### Debian / Ubuntu
 
 ```bash
-sudo apt install ./rover-explorer_1.0.0_amd64.deb
+sudo apt install ./rover-explorer_<version>_amd64.deb   # x86-64
+sudo apt install ./rover-explorer_<version>_arm64.deb   # ARM64 (aarch64)
 ```
 
 ### Windows
 
-Run `RoverExplorer-1.0.0-setup.exe`, or unzip the portable build.
+Run `RoverExplorer-<version>-setup.exe`, or unzip the portable build. On
+Windows on ARM use `RoverExplorer-<version>-arm64-setup.exe` (or the
+`windows-arm64` zip) for the native build; the x64 installer also works there,
+through emulation.
 
 ## Build from source
 
@@ -91,7 +109,7 @@ Requires Flutter 3.44+.
 ```bash
 flutter pub get
 
-# Linux
+# Linux (build/linux/arm64/... on an ARM64 machine)
 flutter build linux --release
 ./build/linux/x64/release/bundle/rover_explorer
 
@@ -105,7 +123,14 @@ snapcraft pack
 flutter build windows --release
 iscc packaging\windows\rover-explorer.iss   # installer
 dart run msix:create --store                # Microsoft Store package (.msix)
+
+# Windows on ARM: build on an ARM64 machine, then
+iscc /DArch=arm64 packaging\windows\rover-explorer.iss
+dart run msix:create --store --architecture arm64 --build-windows false
 ```
+
+Flutter cannot cross-compile desktop apps, so each architecture is built on a
+machine of that architecture; CI does this on native x64 and arm64 runners.
 
 ## Development
 
