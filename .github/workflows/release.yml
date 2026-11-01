@@ -5,9 +5,18 @@ name: Release
 #
 #   rover-explorer-<v>-linux-<x64|arm64>.tar.gz
 #   rover-explorer_<v>_<amd64|arm64>.deb
+#   rover-explorer-<v>-1.<x86_64|aarch64>.rpm          (Fedora, openSUSE)
+#   rover-explorer-<v>-1-<x86_64|aarch64>.pkg.tar.zst  (Arch)
+#   Rover-Explorer-<v>-<x86_64|aarch64>.AppImage
+#   rover-explorer-<v>-<x86_64|aarch64>.flatpak
+#   rover-explorer-bin-<v>-aur.tar.gz                  (AUR PKGBUILD)
 #   rover-explorer-<v>-windows-<x64|arm64>.zip
 #   RoverExplorer-<v>-setup.exe          (x64)
 #   RoverExplorer-<v>-arm64-setup.exe    (arm64)
+#
+# The .rpm, Arch package, AppImage and Flatpak repackage the .deb of the same
+# run, and the distros and flatpak jobs install and start each of them on its
+# distribution before anything is published.
 #
 # Pull requests run every build and check, and stop before publishing, so a
 # change to the release path is proven before a tag needs it.
@@ -239,10 +248,156 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # Repackages each architecture's .deb for Fedora/RHEL/openSUSE (.rpm),
+  # Arch (.pkg.tar.zst) and any glibc distribution (AppImage), then installs
+  # every one of them on the real distribution and runs it.
+  distros:
+    name: Other distros (${{ matrix.arch }})
+    needs: [linux]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, deb_arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, deb_arch: arm64, runner: ubuntu-24.04-arm }
+    env:
+      NFPM_VERSION: '2.48.0'
+      APPIMAGETOOL_VERSION: '1.9.1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-artifacts-${{ matrix.arch }}
+          path: deb
+
+      - name: Install nfpm and appimagetool
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$(uname -m)" in
+            x86_64) nfpm_arch=x86_64; ai_arch=x86_64 ;;
+            aarch64) nfpm_arch=arm64; ai_arch=aarch64 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP/bin"
+          tarball="nfpm_${NFPM_VERSION}_Linux_${nfpm_arch}.tar.gz"
+          gh release download "v$NFPM_VERSION" -R goreleaser/nfpm -p "$tarball" -p checksums.txt
+          grep " $tarball\$" checksums.txt | sha256sum -c -
+          tar -xzf "$tarball" nfpm
+          gh release download "$APPIMAGETOOL_VERSION" -R AppImage/appimagetool \
+            -p "appimagetool-$ai_arch.AppImage" -O appimagetool
+          chmod +x appimagetool
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # TREE_TARBALL: the AppImage's tree, for the Flatpak job; tar keeps
+      # modes and symlinks, which a plain artifact upload would drop.
+      - name: Build .rpm, Arch package and AppImage
+        run: |
+          VERSION="$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//' | cut -d+ -f1)"
+          dpkg-deb -x "deb/rover-explorer_${VERSION}_${{ matrix.deb_arch }}.deb" "$RUNNER_TEMP/root"
+          VERSION="$VERSION" TREE_TARBALL="$RUNNER_TEMP/tree.tar" \
+            packaging/linux-distros/pack.sh "$RUNNER_TEMP/root" ${{ matrix.deb_arch }} dist
+
+      - name: Install and run on Fedora, openSUSE and Arch
+        run: packaging/linux-distros/verify.sh dist ${{ matrix.deb_arch }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: distros-${{ matrix.arch }}
+          path: |
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/*.AppImage
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tree-${{ matrix.arch }}
+          path: ${{ runner.temp }}/tree.tar
+          if-no-files-found: error
+          retention-days: 3
+
+  # AUR recipe: PKGBUILD + .SRCINFO for rover-explorer-bin, rendered with this
+  # build's checksums and proven with makepkg on archlinux:latest.
+  aur:
+    name: AUR PKGBUILD
+    needs: [linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: 'linux-artifacts-*'
+          path: debs
+          merge-multiple: true
+
+      - name: Render and check the PKGBUILD
+        run: |
+          VERSION="$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//' | cut -d+ -f1)"
+          VERSION="$VERSION" packaging/arch/aur.sh debs/*_amd64.deb debs/*_arm64.deb dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: aur
+          path: dist/*-aur.tar.gz
+          if-no-files-found: error
+
+  # Builds the Flatpak bundle from the distros job's tree, installs it in the
+  # builder container and runs it there.
+  flatpak:
+    name: Flatpak (${{ matrix.arch }})
+    needs: [distros]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, fp_arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: arm64, fp_arch: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: tree-${{ matrix.arch }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack the installed tree
+        id: v
+        run: |
+          mkdir -p packaging/flatpak/tree
+          tar -xf "$RUNNER_TEMP/tree.tar" -C packaging/flatpak/tree
+          echo "version=$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//' | cut -d+ -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/com.dhivalabs.rover_explorer.yml
+          bundle: rover-explorer-${{ steps.v.outputs.version }}-${{ matrix.fp_arch }}.flatpak
+          arch: ${{ matrix.fp_arch }}
+          artifact-name: flatpak-${{ matrix.arch }}
+          cache: false
+
+      - name: Install the bundle and run it
+        env:
+          SANDBOX_TOOLS: xdg-open pw-play paplay aplay
+        run: |
+          packaging/flatpak/test-bundle.sh \
+            rover-explorer-${{ steps.v.outputs.version }}-${{ matrix.fp_arch }}.flatpak \
+            com.dhivalabs.rover_explorer '^Rover Explorer$'
+
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [linux, windows]
+    needs: [linux, windows, distros, aur, flatpak]
     # The only job that can write to the repository. Pull requests and manual
     # runs go through the same steps and stop before the release is created.
     permissions:
@@ -260,10 +415,20 @@ jobs:
           mkdir -p dist
           find artifacts -type f \
             \( -name '*.deb' -o -name '*.zip' -o -name '*.tar.gz' \
-               -o -name '*setup.exe' \) -exec cp {} dist/ \;
+               -o -name '*setup.exe' -o -name '*.rpm' -o -name '*.pkg.tar.zst' \
+               -o -name '*.AppImage' -o -name '*.flatpak' \) -exec cp {} dist/ \;
           cat > expected.txt <<EOF
+          Rover-Explorer-${VERSION}-aarch64.AppImage
+          Rover-Explorer-${VERSION}-x86_64.AppImage
           RoverExplorer-${VERSION}-arm64-setup.exe
           RoverExplorer-${VERSION}-setup.exe
+          rover-explorer-${VERSION}-1-aarch64.pkg.tar.zst
+          rover-explorer-${VERSION}-1-x86_64.pkg.tar.zst
+          rover-explorer-${VERSION}-1.aarch64.rpm
+          rover-explorer-${VERSION}-1.x86_64.rpm
+          rover-explorer-${VERSION}-aarch64.flatpak
+          rover-explorer-${VERSION}-x86_64.flatpak
+          rover-explorer-bin-${VERSION}-aur.tar.gz
           rover-explorer-${VERSION}-linux-arm64.tar.gz
           rover-explorer-${VERSION}-linux-x64.tar.gz
           rover-explorer-${VERSION}-windows-arm64.zip

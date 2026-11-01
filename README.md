@@ -11,6 +11,7 @@ A [Dhiva Labs](https://github.com/Dhiva-Labs) project · MIT licensed
 [![ARM64 builds](https://github.com/Dhiva-Labs/rover_explorer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Dhiva-Labs/rover_explorer/actions/workflows/ci.yml)
 ![Linux x64 | arm64](https://img.shields.io/badge/Linux-x64%20%7C%20arm64-informational?logo=linux&logoColor=white)
 ![Windows x64 | arm64](https://img.shields.io/badge/Windows-x64%20%7C%20arm64-informational?logo=windows&logoColor=white)
+![Linux: deb | rpm | Arch | AppImage | Flatpak | Snap](https://img.shields.io/badge/Linux-deb%20%7C%20rpm%20%7C%20Arch%20%7C%20AppImage%20%7C%20Flatpak%20%7C%20Snap-informational?logo=linux&logoColor=white)
 
 </div>
 
@@ -84,6 +85,10 @@ Releases after 1.0.0 carry x64 and arm64 builds, with a `SHA256SUMS.txt`
 | Platform | x64 | arm64 |
 |---|---|---|
 | Debian / Ubuntu | `rover-explorer_<version>_amd64.deb` | `rover-explorer_<version>_arm64.deb` |
+| Fedora, RHEL, openSUSE | `rover-explorer-<version>-1.x86_64.rpm` | `rover-explorer-<version>-1.aarch64.rpm` |
+| Arch, Manjaro, EndeavourOS | `rover-explorer-<version>-1-x86_64.pkg.tar.zst` | `rover-explorer-<version>-1-aarch64.pkg.tar.zst` |
+| Any distribution (AppImage) | `Rover-Explorer-<version>-x86_64.AppImage` | `Rover-Explorer-<version>-aarch64.AppImage` |
+| Any distribution (Flatpak) | `rover-explorer-<version>-x86_64.flatpak` | `rover-explorer-<version>-aarch64.flatpak` |
 | Linux portable | `rover-explorer-<version>-linux-x64.tar.gz` | `rover-explorer-<version>-linux-arm64.tar.gz` |
 | Windows installer | `RoverExplorer-<version>-setup.exe` | `RoverExplorer-<version>-arm64-setup.exe` |
 | Windows portable | `rover-explorer-<version>-windows-x64.zip` | `rover-explorer-<version>-windows-arm64.zip` |
@@ -94,6 +99,31 @@ Releases after 1.0.0 carry x64 and arm64 builds, with a `SHA256SUMS.txt`
 sudo apt install ./rover-explorer_<version>_amd64.deb   # x86-64
 sudo apt install ./rover-explorer_<version>_arm64.deb   # ARM64 (aarch64)
 ```
+
+### Other Linux distributions
+
+The `.rpm`, Arch package, AppImage and Flatpak are attached from the next
+release on, together with an AUR recipe (`rover-explorer-bin-<version>-aur.tar.gz`,
+PKGBUILD + .SRCINFO; not on the AUR yet). Each one is installed and started on
+its distribution in CI before a release is published.
+
+```bash
+sudo dnf install ./rover-explorer-<version>-1.x86_64.rpm                         # Fedora, RHEL/Rocky/Alma
+sudo zypper install --allow-unsigned-rpm ./rover-explorer-<version>-1.x86_64.rpm # openSUSE
+sudo pacman -U ./rover-explorer-<version>-1-x86_64.pkg.tar.zst                   # Arch, Manjaro
+chmod +x Rover-Explorer-<version>-x86_64.AppImage && ./Rover-Explorer-<version>-x86_64.AppImage
+flatpak install --user ./rover-explorer-<version>-x86_64.flatpak                 # needs the flathub remote
+```
+
+- Everything is built on Ubuntu 24.04. The `.rpm` asks for the glibc it
+  really uses, so dnf and zypper refuse a system that is too old; the
+  AppImage needs GTK 3 and glibc 2.34 or newer from the system (Fedora 35+,
+  RHEL 9, openSUSE Tumbleweed, current Arch).
+- The `.rpm` is not signed, hence `--allow-unsigned-rpm` on openSUSE.
+- The Flatpak needs the GNOME runtime from Flathub
+  (`flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`)
+  and has access to the whole file system (`--filesystem=host`), as a file
+  manager must.
 
 ### Windows
 

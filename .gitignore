@@ -49,3 +49,6 @@ app.*.map.json
 
 # Locally built snap artifacts
 *.snap
+
+# Flatpak build input, unpacked by CI (packaging/flatpak/README.md)
+/packaging/flatpak/tree/
