@@ -17,10 +17,14 @@ provides=('@NAME@')
 conflicts=('@NAME@')
 options=('!strip' '!debug')
 # The .deb carries no licence file; MIT asks for the notice to be shipped.
-source=("LICENSE-$pkgver::@RAW_URL@/LICENSE")
-sha256sums=('@SHA_LICENSE@')
-source_x86_64=("@RELEASE_URL@/@DEB_AMD64@")
-source_aarch64=("@RELEASE_URL@/@DEB_ARM64@")
+source=(
+@SOURCES@
+)
+sha256sums=(
+@SHA256SUMS@
+)
+source_x86_64=("@RELEASE_URL@/@SRC_AMD64@")
+source_aarch64=("@RELEASE_URL@/@SRC_ARM64@")
 sha256sums_x86_64=('@SHA_AMD64@')
 sha256sums_aarch64=('@SHA_ARM64@')
 
@@ -33,5 +37,5 @@ package() {
   # Files of the .deb the Arch package leaves out, as the one CI builds does
   # (packaging/linux-distros/distro.conf upstream says why).
   @REMOVE@
-  install -Dm644 "LICENSE-$pkgver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$pkgname-$pkgver-LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

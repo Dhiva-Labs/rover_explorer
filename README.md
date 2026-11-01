@@ -117,8 +117,8 @@ flatpak install --user ./rover-explorer-<version>-x86_64.flatpak                
 
 - Everything is built on Ubuntu 24.04. The `.rpm` asks for the glibc it
   really uses, so dnf and zypper refuse a system that is too old; the
-  AppImage needs GTK 3 from the system (Fedora 40+, openSUSE Tumbleweed,
-  current Arch and similar; not openSUSE Leap 15).
+  AppImage needs GTK 3 and glibc 2.34 or newer from the system (Fedora 35+,
+  RHEL 9, openSUSE Tumbleweed, current Arch).
 - The `.rpm` is not signed, hence `--allow-unsigned-rpm` on openSUSE.
 - The Flatpak needs the GNOME runtime from Flathub
   (`flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`)
