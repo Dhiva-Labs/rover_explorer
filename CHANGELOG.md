@@ -5,6 +5,16 @@ All notable changes to Rover Explorer are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Packages for other Linux distributions, for x64 and arm64, built from the
+  same build as the `.deb` and installed and started on each target in CI:
+  an `.rpm` for Fedora and openSUSE, an Arch Linux package, an AppImage and a
+  Flatpak bundle, plus an AUR recipe (`rover-explorer-bin`). Tagged releases
+  include them.
+
 ## [1.0.1] - 2026-10-16
 
 Linux and Windows ARM64 builds, Windows fixes and packaging work.
@@ -99,5 +109,6 @@ First public release.
 - Packaging for Debian (`.deb`), Snap, and Windows (Inno Setup), plus GitHub
   Actions workflows for CI and releases.
 
+[Unreleased]: https://github.com/Dhiva-Labs/rover_explorer/compare/v1.0.1...HEAD
 [1.0.1]: https://github.com/Dhiva-Labs/rover_explorer/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Dhiva-Labs/rover_explorer/releases/tag/v1.0.0
