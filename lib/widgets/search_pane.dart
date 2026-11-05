@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/search_index.dart';
 import '../xp/xp_theme.dart';
@@ -22,6 +23,12 @@ class SearchPane extends StatefulWidget {
   final String currentFolder;
   final int? resultCount;
 
+  /// Set when the last search failed inside the indexer.
+  final String? error;
+
+  /// Down arrow in the query box: move the keyboard to the results.
+  final VoidCallback? onFocusResults;
+
   /// When false the animated dog and speech bubble are hidden (Folder
   /// Options → "Use the animated companion").
   final bool showCompanion;
@@ -34,24 +41,52 @@ class SearchPane extends StatefulWidget {
     required this.indexStatus,
     required this.currentFolder,
     this.resultCount,
+    this.error,
+    this.onFocusResults,
     this.showCompanion = true,
   });
 
   @override
-  State<SearchPane> createState() => _SearchPaneState();
+  State<SearchPane> createState() => SearchPaneState();
 }
 
-class _SearchPaneState extends State<SearchPane> {
+class SearchPaneState extends State<SearchPane> {
   final _controller = TextEditingController();
+  final _fieldFocus = FocusNode(debugLabel: 'search query');
   SearchKind _kind = SearchKind.all;
   bool _currentOnly = false;
   Timer? _debounce;
 
   @override
+  void initState() {
+    super.initState();
+    // `autofocus` only applies when nothing else in the window has focus —
+    // and the file list always does — so take the focus explicitly.
+    WidgetsBinding.instance.addPostFrameCallback((_) => focusQuery());
+  }
+
+  @override
   void dispose() {
     _debounce?.cancel();
     _controller.dispose();
+    _fieldFocus.dispose();
     super.dispose();
+  }
+
+  /// Puts the cursor in the query box with its text selected, ready to type
+  /// over (Ctrl+F while the pane is already open).
+  void focusQuery() {
+    if (!mounted) return;
+    _fieldFocus.requestFocus();
+    _controller.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _controller.text.length,
+    );
+  }
+
+  void _clear() {
+    _controller.clear();
+    _fire(immediate: true);
   }
 
   void _fire({bool immediate = false}) {
@@ -67,6 +102,15 @@ class _SearchPaneState extends State<SearchPane> {
 
   String get _bubbleText {
     if (widget.mood == DogMood.searching) return 'Sniffing around for it...';
+    if (widget.error != null) {
+      return 'Ruff, something went wrong with that search. Try again?';
+    }
+    final idx = widget.indexStatus;
+    final stillLearning = idx.started && !idx.complete;
+    if (widget.resultCount != null && stillLearning) {
+      return 'I found ${widget.resultCount} so far, but I am still learning '
+          'where everything is — more may turn up in a moment.';
+    }
     if (widget.resultCount != null) {
       if (widget.resultCount == 0) return "Sorry, I couldn't find anything.";
       return 'I found ${widget.resultCount} item${widget.resultCount == 1 ? '' : 's'}! '
@@ -187,16 +231,27 @@ class _SearchPaneState extends State<SearchPane> {
                 ),
                 const SizedBox(height: 3),
                 XpSunken(
-                  child: TextField(
-                    controller: _controller,
-                    autofocus: true,
-                    onChanged: (_) => _fire(),
-                    onSubmitted: (_) => _fire(immediate: true),
-                    style: Xp.style(size: 12),
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      border: InputBorder.none,
-                      contentPadding: EdgeInsets.symmetric(vertical: 6),
+                  child: CallbackShortcuts(
+                    bindings: {
+                      const SingleActivator(LogicalKeyboardKey.escape): () {
+                        if (_controller.text.isNotEmpty) _clear();
+                      },
+                      const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
+                          widget.onFocusResults?.call(),
+                    },
+                    child: TextField(
+                      controller: _controller,
+                      focusNode: _fieldFocus,
+                      onChanged: (_) => _fire(),
+                      // Overriding onEditingComplete stops Enter from
+                      // dropping focus, so the query can be refined at once.
+                      onEditingComplete: () => _fire(immediate: true),
+                      style: Xp.style(size: 12),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        border: InputBorder.none,
+                        contentPadding: EdgeInsets.symmetric(vertical: 6),
+                      ),
                     ),
                   ),
                 ),
@@ -267,8 +322,8 @@ class _SearchPaneState extends State<SearchPane> {
                     XpButton(
                       label: 'Clear',
                       onTap: () {
-                        _controller.clear();
-                        _fire(immediate: true);
+                        _clear();
+                        focusQuery();
                       },
                     ),
                   ],
@@ -281,8 +336,11 @@ class _SearchPaneState extends State<SearchPane> {
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
-                    idx.scanning
+                    !idx.complete && idx.scanning
                         ? 'Building index... ${_fmt(idx.count)} items so far'
+                        : idx.scanning
+                        ? '${_fmt(idx.count)} items searchable — checking for '
+                              'changes...'
                         : 'Index ready — ${_fmt(idx.count)} items searchable '
                               'instantly',
                     style: Xp.style(size: 10.5, color: const Color(0xFF33507E)),

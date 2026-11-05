@@ -14,6 +14,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an `.rpm` for Fedora and openSUSE, an Arch Linux package, an AppImage and a
   Flatpak bundle, plus an AUR recipe (`rover-explorer-bin`). Tagged releases
   include them.
+- Search understands XP-style wildcards (`*.pdf`, `IMG_????.jpg`, `report*`),
+  quoted phrases (`"annual report"`) and words with a `/` that match the
+  folder path (`src/main`).
+- Search keyboard: `Esc` clears the query, `↓` moves into the results, the
+  arrow keys walk them and `Enter` opens one. `Ctrl+F` with the pane already
+  open puts the cursor back in the query box with the text selected.
+- "Only in current folder" now also works outside the indexed home folder
+  (other drives, `/mnt`, hidden folders): that folder is walked on demand.
+
+### Fixed
+
+- Search: Backspace in the query box went up one folder (and hid the
+  results) instead of deleting a character. The window-wide Backspace, which
+  means "up one level", was taken before any text box saw the key; the same
+  hit the address bar. Shortcuts now leave keys to whichever text box has
+  focus.
+- Search: opening the Search Companion (toolbar or `Ctrl+F`) did not put the
+  cursor in the query box, so typing went nowhere until the box was clicked.
+- Search: word order changed the result. `rover screen` and `screen rover`
+  now find the same files; any word may be the one in the file name.
+- Search: clearing the query, or navigating away, while a search was still
+  running could bring its stale results back over the folder.
+- Search: after renaming, deleting, moving or creating items in the app, the
+  results kept the old names until the next full rescan. The index is now
+  updated on the spot, and files deleted outside the app are dropped from
+  results (and the index) instead of listing with a 1970 date.
+- Search: on a first run (no index cache yet) searches came back empty while
+  the index was being built, and stayed that way. Results now fill in as the
+  scan progresses and refresh when it finishes.
+- Search: "only in current folder" for `~/foo` also matched `~/foobar`.
+- Search: closing the pane left the keyboard nowhere, so shortcuts such as
+  Backspace and `Ctrl+F` stopped working until the address bar was clicked.
+  Clicking a file now also gives the file list the keyboard (Del, F2, Ctrl+A).
+- Search: an error inside the background indexer could stop all further
+  searches with the dog sniffing forever; errors are now reported per query.
+- Search results are shown best match first (they were re-sorted by name),
+  until a column header is clicked.
+
+### Changed
+
+- Searches typed while another is still running no longer queue up: only
+  the newest waits, so fast typing cannot build a backlog. One- and
+  two-letter searches over a ~420k-entry index dropped from ~70 ms to ~12 ms.
+- The index cache is written to a temporary file and renamed into place, so
+  a crash mid-write cannot leave a truncated cache. Names containing a line
+  break are no longer written to it (they corrupted the line format).
 
 ## [1.0.1] - 2026-10-16
 

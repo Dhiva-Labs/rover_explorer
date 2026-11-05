@@ -50,10 +50,16 @@ And it brings back the dog.
   (~450k entries index in seconds) and answers queries per keystroke.
 - The index is cached to disk, so the next launch searches instantly while a
   refresh scan runs behind it.
-- Ranked matching: exact > prefix > word-start > substring; extra words match
-  anywhere in the full path (e.g. `screen rover_explorer`).
+- Ranked matching, best first: names holding more of your words, then
+  exact > prefix > word-start > substring. Every word must match the name or
+  the folder path, in any order (`rover screen` = `screen rover`).
+- XP-style wildcards (`*.pdf`, `IMG_????.jpg`, `report*`), quoted phrases
+  (`"annual report"`), and words with a `/` that match the path (`src/main`).
 - Filters: All / Folders / Pictures / Music / Videos / Documents, plus
-  "only in current folder".
+  "only in current folder" — which also works outside the indexed home tree
+  (other drives, hidden folders) by walking that folder on demand.
+- Renames, deletes, moves and new folders made in the app update the index
+  immediately.
 
 ### The companion
 
@@ -76,6 +82,12 @@ turns up with a bone.
 | Cut / Copy / Paste | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` |
 | Properties | `Alt+Enter` |
 | Back / Forward / Up | `Alt+←` / `Alt+→` / `Alt+↑` or `Backspace` |
+| Move through files / results | `↑` / `↓` (and `←` / `→` in icons view) |
+| Open the selected item | `Enter` |
+
+In the search box: `↓` jumps to the results, `Esc` clears the query, and
+`Ctrl+F` puts the cursor back with the text selected. `Backspace` only goes
+up a folder when no text box has the keyboard.
 
 ## Install
 

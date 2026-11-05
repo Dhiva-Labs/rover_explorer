@@ -131,4 +131,135 @@ void main() {
     await rescanned.timeout(const Duration(seconds: 10));
     second.dispose();
   });
+
+  test('the first finished scan marks the index complete', () {
+    expect(index.lastStatus.complete, isTrue);
+  });
+
+  test('word order does not matter', () async {
+    final a = await run('reports holiday');
+    final b = await run('holiday reports');
+    expect(a.hits.single.path, b.hits.single.path);
+  });
+
+  test('wildcards match whole names', () async {
+    final r = await run('*.png');
+    expect(r.hits.single.name, 'holiday.png');
+    final jpg = await run('holiday-?.jpg');
+    expect(jpg.hits.single.name, 'holiday-2.JPG');
+  });
+
+  group('touch keeps the index in step with app file operations', () {
+    test('a rename shows up under the new name at once', () async {
+      final from = p.join(root.path, 'reports', 'budget.xlsx');
+      final to = p.join(root.path, 'reports', 'forecast.xlsx');
+      File(from).renameSync(to);
+      index.touch(removed: [from], added: [to]);
+      expect((await run('forecast')).hits.single.path, to);
+      expect((await run('budget')).hits, isEmpty);
+    });
+
+    test('deleting a folder drops everything inside it', () async {
+      final photos = p.join(root.path, 'photos');
+      Directory(photos).deleteSync(recursive: true);
+      index.touch(removed: [photos]);
+      final r = await run('holiday');
+      expect(r.hits.single.name, 'holiday.pdf');
+      expect(r.totalMatches, 1);
+    });
+
+    test('a new folder is indexed together with its contents', () async {
+      final added = p.join(root.path, 'new');
+      Directory(p.join(added, 'inner')).createSync(recursive: true);
+      File(p.join(added, 'inner', 'deep.txt')).writeAsStringSync('x');
+      index.touch(added: [added]);
+      expect((await run('deep')).hits.single.name, 'deep.txt');
+      expect((await run('inner')).hits.single.isDir, isTrue);
+    });
+
+    test('touching the same path twice does not duplicate it', () async {
+      final f = p.join(root.path, 'twice.txt');
+      File(f).writeAsStringSync('x');
+      index.touch(added: [f]);
+      index.touch(added: [f]);
+      expect((await run('twice')).totalMatches, 1);
+    });
+
+    test('hidden and out-of-tree paths stay out of the index', () async {
+      final secret = p.join(root.path, '.secret');
+      Directory(secret).createSync();
+      File(p.join(secret, 'key.txt')).writeAsStringSync('x');
+      final outside = Directory.systemTemp.createTempSync('rover_outside_');
+      addTearDown(() => outside.deleteSync(recursive: true));
+      final stray = p.join(outside.path, 'stray.txt');
+      File(stray).writeAsStringSync('x');
+      index.touch(added: [secret, stray]);
+      expect((await run('key')).hits, isEmpty);
+      expect((await run('stray')).hits, isEmpty);
+    });
+  });
+
+  group('"only in current folder" outside the index', () {
+    test('a folder outside the indexed roots is walked on demand', () async {
+      final outside = Directory.systemTemp.createTempSync('rover_outside_');
+      addTearDown(() => outside.deleteSync(recursive: true));
+      Directory(p.join(outside.path, 'sub')).createSync();
+      File(p.join(outside.path, 'sub', 'faraway.txt')).writeAsStringSync('x');
+
+      final scoped = await run('faraway', under: outside.path);
+      expect(
+        scoped.hits.single.path,
+        p.join(outside.path, 'sub', 'faraway.txt'),
+      );
+      // The whole-index search still only covers the roots.
+      expect((await run('faraway')).hits, isEmpty);
+    });
+
+    test('a hidden folder inside the root is walked on demand', () async {
+      final config = p.join(root.path, '.config');
+      Directory(p.join(config, 'app')).createSync(recursive: true);
+      File(p.join(config, 'app', 'settings.json')).writeAsStringSync('{}');
+
+      final r = await run('settings', under: config);
+      expect(r.hits.single.name, 'settings.json');
+      expect((await run('settings')).hits, isEmpty);
+    });
+  });
+
+  test('rapid queries: a query replaced while waiting is skipped', () async {
+    final seen = <int>[];
+    final sub = index.results.listen((r) => seen.add(r.queryId));
+    final first = index.query('holiday');
+    final replaced = index.query('budget');
+    final last = index.query('song');
+    final r = await index.results
+        .firstWhere((x) => x.queryId == last)
+        .timeout(const Duration(seconds: 10));
+    await sub.cancel();
+    expect(r.hits.single.name, 'song.mp3');
+    expect(seen, contains(first));
+    expect(seen, isNot(contains(replaced)));
+  });
+
+  test(
+    'a file name with a line break cannot corrupt the cache',
+    () async {
+      final odd = Directory.systemTemp.createTempSync('rover_odd_');
+      addTearDown(() => odd.deleteSync(recursive: true));
+      File(p.join(odd.path, 'line\nbreak.txt')).writeAsStringSync('x');
+      File(p.join(odd.path, 'plain.txt')).writeAsStringSync('x');
+      final cache = p.join(odd.path, '.cache', 'index.txt');
+
+      final svc = SearchIndexService();
+      await svc.start(roots: [odd.path], cacheFile: cache);
+      await svc.status
+          .firstWhere((s) => !s.scanning && s.count > 0)
+          .timeout(const Duration(seconds: 20));
+      svc.dispose();
+
+      final lines = File(cache).readAsLinesSync();
+      expect(lines, ['f${p.join(odd.path, 'plain.txt')}']);
+    },
+    skip: Platform.isWindows ? 'line breaks are not valid in names' : false,
+  );
 }
