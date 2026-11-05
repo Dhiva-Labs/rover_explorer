@@ -25,14 +25,17 @@ import '../xp/xp_theme.dart';
 
 class ExplorerScreen extends StatefulWidget {
   final SearchIndexService index;
-  const ExplorerScreen({super.key, required this.index});
+
+  /// Folder shown at startup; the home folder when null.
+  final String? initialPath;
+  const ExplorerScreen({super.key, required this.index, this.initialPath});
 
   @override
   State<ExplorerScreen> createState() => _ExplorerScreenState();
 }
 
 class _ExplorerScreenState extends State<ExplorerScreen> {
-  String _path = FsService.homeDir;
+  late String _path = widget.initialPath ?? FsService.homeDir;
   List<FileEntry> _entries = [];
   String? _error;
   final List<String> _back = [];
@@ -48,6 +51,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   bool _showingResults = false;
   List<FileEntry> _results = [];
   int? _resultTotal;
+  String? _searchError;
   DogMood _mood = DogMood.idle;
   int _pendingQueryId = -1;
   SearchQuerySpec? _lastSpec;
@@ -61,25 +65,95 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
 
   List<FileEntry> _selection = [];
   final _listKey = GlobalKey<FileListViewState>();
+  final _searchKey = GlobalKey<SearchPaneState>();
   final _addressController = TextEditingController();
+  ModalRoute<Object?>? _route;
 
   @override
   void initState() {
     super.initState();
     _indexStatus = widget.index.lastStatus;
     _resultsSub = widget.index.results.listen(_onResults);
-    _statusSub = widget.index.status.listen((s) {
-      if (mounted) setState(() => _indexStatus = s);
-    });
+    _statusSub = widget.index.status.listen(_onIndexStatus);
+    HardwareKeyboard.instance.addHandler(_onKey);
     _load(_path);
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+  }
+
+  @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
     _resultsSub?.cancel();
     _statusSub?.cancel();
     _addressController.dispose();
     super.dispose();
+  }
+
+  // ---------------------------- keyboard ---------------------------------
+
+  /// Whether the keyboard is in a text box (search query, address bar).
+  static bool get _editingText {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    return ctx.widget is EditableText ||
+        ctx.findAncestorStateOfType<EditableTextState>() != null;
+  }
+
+  /// Window-wide shortcuts. A [HardwareKeyboard] handler rather than a
+  /// `Focus` wrapper: it sees keys wherever the focus is (or after it was
+  /// lost with a closed pane), and runs after the focused widget, so a text
+  /// box gets first claim on Backspace and friends.
+  bool _onKey(KeyEvent event) {
+    if (event is! KeyDownEvent || !mounted) return false;
+    // A dialog or menu sits on a route above this one; its keys are its own.
+    if (!(_route?.isCurrent ?? true)) return false;
+    final kb = HardwareKeyboard.instance;
+    final alt = kb.isAltPressed;
+    final ctrl = kb.isControlPressed;
+    final shift = kb.isShiftPressed;
+    final key = event.logicalKey;
+
+    if (ctrl && !alt && !shift && key == LogicalKeyboardKey.keyF) {
+      _openSearch();
+      return true;
+    }
+    if (alt && !ctrl && !shift) {
+      if (key == LogicalKeyboardKey.arrowLeft) {
+        _goBack();
+        return true;
+      }
+      if (key == LogicalKeyboardKey.arrowRight) {
+        _goForward();
+        return true;
+      }
+      if (key == LogicalKeyboardKey.arrowUp) {
+        _goUp();
+        return true;
+      }
+    }
+    if (ctrl && shift && !alt && key == LogicalKeyboardKey.keyN) {
+      _newFolder();
+      return true;
+    }
+    if (key == LogicalKeyboardKey.f5 && !ctrl && !alt) {
+      _refresh();
+      return true;
+    }
+    // Plain Backspace deletes text while typing; elsewhere it goes up.
+    if (key == LogicalKeyboardKey.backspace &&
+        !ctrl &&
+        !alt &&
+        !shift &&
+        !_editingText) {
+      _goUp();
+      return true;
+    }
+    return false;
   }
 
   // ------------------------------ navigation -----------------------------
@@ -91,6 +165,9 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   }
 
   void _load(String path, {bool pushHistory = false}) {
+    // Leaving the results: an answer still on its way must not bring them
+    // back over the folder.
+    _pendingQueryId = -1;
     List<FileEntry>? entries;
     String? error;
     try {
@@ -107,6 +184,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
       _entries = entries ?? [];
       _error = error;
       _showingResults = false;
+      if (_mood == DogMood.searching) _mood = DogMood.idle;
       _selection = [];
       _addressController.text = path;
       if (error == null) _pushRecent(path);
@@ -137,6 +215,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   void _runQuery(SearchQuerySpec spec) {
     _lastSpec = spec;
     if (spec.text.trim().isEmpty && spec.kind == SearchKind.all) {
+      _pendingQueryId = -1; // drop any answer still in flight
       setState(() {
         _showingResults = false;
         _results = [];
@@ -155,37 +234,59 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
 
   void _onResults(SearchResults r) {
     if (r.queryId != _pendingQueryId || !_searchOpen) return;
+    _pendingQueryId = -1;
     final entries = <FileEntry>[];
+    final gone = <String>[];
     for (final h in r.hits) {
-      try {
-        final stat = FileStat.statSync(h.path);
-        entries.add(
-          FileEntry(
-            path: h.path,
-            name: h.name,
-            isDir: h.isDir,
-            size: h.isDir ? 0 : stat.size,
-            modified: stat.modified,
-          ),
-        );
-      } catch (_) {
-        entries.add(
-          FileEntry(
-            path: h.path,
-            name: h.name,
-            isDir: h.isDir,
-            size: 0,
-            modified: DateTime.fromMillisecondsSinceEpoch(0),
-          ),
-        );
+      final stat = FileStat.statSync(h.path);
+      if (stat.type == FileSystemEntityType.notFound &&
+          FileSystemEntity.typeSync(h.path, followLinks: false) ==
+              FileSystemEntityType.notFound) {
+        // Deleted or renamed outside the app since the last scan.
+        gone.add(h.path);
+        continue;
       }
+      final known = stat.type != FileSystemEntityType.notFound;
+      entries.add(
+        FileEntry(
+          path: h.path,
+          name: h.name,
+          isDir: h.isDir,
+          size: h.isDir || !known ? 0 : stat.size,
+          modified: known
+              ? stat.modified
+              : DateTime.fromMillisecondsSinceEpoch(0),
+        ),
+      );
     }
+    // Teach the index, so they stop counting toward later searches too.
+    if (gone.isNotEmpty) widget.index.touch(removed: gone);
     setState(() {
       _results = entries;
-      _resultTotal = r.totalMatches;
+      _resultTotal = r.totalMatches - gone.length;
+      _searchError = r.error;
       _showingResults = true;
-      _mood = r.hits.isEmpty ? DogMood.idle : DogMood.found;
+      _mood = entries.isEmpty ? DogMood.idle : DogMood.found;
     });
+  }
+
+  void _onIndexStatus(IndexStatus s) {
+    if (!mounted) return;
+    final scanFinished = _indexStatus.scanning && !s.scanning;
+    setState(() => _indexStatus = s);
+    // Results computed while the scan ran can be missing files (first run)
+    // or still list ones the scan found gone: search again on the new index.
+    if (scanFinished && _searchOpen && _showingResults && _lastSpec != null) {
+      _runQuery(_lastSpec!);
+    }
+  }
+
+  void _openSearch() {
+    if (_searchOpen) {
+      _searchKey.currentState?.focusQuery();
+    } else {
+      _toggleSearch();
+    }
   }
 
   // ------------------------------ actions --------------------------------
@@ -237,17 +338,22 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   Future<void> _paste() async {
     if (_clipboard.isEmpty) return;
     final errors = <String>[];
+    final removed = <String>[];
+    final added = <String>[];
     for (final src in _clipboard) {
       try {
         if (_clipIsCut) {
-          await FsService.moveInto(src, _path);
+          final dest = await FsService.moveInto(src, _path);
+          if (dest != src) removed.add(src);
+          added.add(dest);
         } else {
-          await FsService.copyInto(src, _path);
+          added.add(await FsService.copyInto(src, _path));
         }
       } catch (e) {
         errors.add('${p.basename(src)}: $e');
       }
     }
+    widget.index.touch(removed: removed, added: added);
     if (_clipIsCut) _clipboard = [];
     _load(_path);
     if (errors.isNotEmpty && mounted) {
@@ -262,6 +368,8 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   /// Drag & drop: move dropped items into [target].
   Future<void> _dropOnFolder(List<FileEntry> dragged, FileEntry target) async {
     final errors = <String>[];
+    final removed = <String>[];
+    final added = <String>[];
     for (final e in dragged) {
       if (p.equals(e.path, target.path)) continue;
       if (e.isDir && p.isWithin(e.path, target.path)) {
@@ -269,11 +377,14 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
         continue;
       }
       try {
-        await FsService.moveInto(e.path, target.path);
+        final dest = await FsService.moveInto(e.path, target.path);
+        if (dest != e.path) removed.add(e.path);
+        added.add(dest);
       } catch (err) {
         errors.add('${e.name}: $err');
       }
     }
+    widget.index.touch(removed: removed, added: added);
     _refresh();
     if (errors.isNotEmpty && mounted) {
       await xpAlert(
@@ -295,13 +406,16 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     );
     if (ok != true) return;
     final errors = <String>[];
+    final removed = <String>[];
     for (final e in sel) {
       try {
         await FsService.delete(e.path);
+        removed.add(e.path);
       } catch (err) {
         errors.add('${e.name}: $err');
       }
     }
+    widget.index.touch(removed: removed);
     _refresh();
     if (errors.isNotEmpty && mounted) {
       await xpAlert(
@@ -321,6 +435,10 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     if (newName == null || newName.isEmpty || newName == e.name) return;
     try {
       await FsService.rename(e.path, newName);
+      widget.index.touch(
+        removed: [e.path],
+        added: [p.join(p.dirname(e.path), newName)],
+      );
     } catch (err) {
       if (mounted) await xpAlert(context, 'Could not rename: $err');
     }
@@ -329,7 +447,8 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
 
   Future<void> _newFolder() async {
     try {
-      await FsService.newFolder(_path);
+      final created = await FsService.newFolder(_path);
+      widget.index.touch(added: [created]);
       _load(_path);
     } catch (e) {
       if (mounted) await xpAlert(context, 'Could not create folder: $e');
@@ -553,134 +672,118 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
         _showFolderTree = false;
       } else {
         _showingResults = false;
+        _pendingQueryId = -1;
+        _searchError = null;
         _mood = DogMood.idle;
       }
     });
+    // The query box goes away with the pane; hand the keyboard to the list
+    // instead of leaving it nowhere.
+    if (!_searchOpen) _focusListAfterFrame();
+  }
+
+  void _focusListAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _listKey.currentState?.focusList(),
+    );
   }
 
   // ------------------------------- build ---------------------------------
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
-      onKeyEvent: (node, event) {
-        if (event is! KeyDownEvent) return KeyEventResult.ignored;
-        final alt = HardwareKeyboard.instance.isAltPressed;
-        final ctrl = HardwareKeyboard.instance.isControlPressed;
-        final shift = HardwareKeyboard.instance.isShiftPressed;
-        if (alt && event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-          _goBack();
-          return KeyEventResult.handled;
-        }
-        if (alt && event.logicalKey == LogicalKeyboardKey.arrowRight) {
-          _goForward();
-          return KeyEventResult.handled;
-        }
-        if ((alt && event.logicalKey == LogicalKeyboardKey.arrowUp) ||
-            event.logicalKey == LogicalKeyboardKey.backspace) {
-          _goUp();
-          return KeyEventResult.handled;
-        }
-        if (ctrl && shift && event.logicalKey == LogicalKeyboardKey.keyN) {
-          _newFolder();
-          return KeyEventResult.handled;
-        }
-        if (ctrl && event.logicalKey == LogicalKeyboardKey.keyF) {
-          if (!_searchOpen) _toggleSearch();
-          return KeyEventResult.handled;
-        }
-        return KeyEventResult.ignored;
-      },
-      child: Column(
-        children: [
-          XpMenuBar(menus: _menus()),
-          _toolbar(),
-          _addressBar(),
-          Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (_searchOpen)
-                  SearchPane(
-                    onQuery: _runQuery,
-                    onClose: _toggleSearch,
-                    mood: _mood,
-                    indexStatus: _indexStatus,
-                    currentFolder: _path,
-                    resultCount: _showingResults ? _resultTotal : null,
-                    showCompanion: _settings.companionEnabled,
-                  )
-                else if (_showFolderTree)
-                  FolderTreePane(
-                    currentPath: _path,
-                    showHidden: _settings.showHidden,
-                    onNavigate: (path) => _load(path, pushHistory: true),
-                    onClose: _toggleFolderTree,
-                  )
-                else
-                  TaskPane(
-                    selection: _selection,
-                    onNavigate: (path) => _load(path, pushHistory: true),
-                    onNewFolder: _newFolder,
-                    onDelete: _selection.isEmpty
-                        ? null
-                        : () => _deleteSelected(_selection),
-                    onRename: _selection.length == 1
-                        ? () => _renameDialog(_selection.first)
-                        : null,
-                    onCopy: _selection.isEmpty
-                        ? null
-                        : () => _handleAction(FileAction.copy, _selection),
-                  ),
-                Expanded(
-                  child: _error != null && !_showingResults
-                      ? Container(
-                          color: Colors.white,
-                          alignment: Alignment.center,
-                          padding: const EdgeInsets.all(24),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(
-                                Icons.report_problem,
-                                size: 34,
-                                color: Color(0xFFC08A2E),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                _error!,
-                                textAlign: TextAlign.center,
-                                style: Xp.style(size: 12, color: Xp.dimText),
-                              ),
-                              const SizedBox(height: 12),
-                              XpButton(
-                                label: 'Go to Home',
-                                onTap: () {
-                                  _load(FsService.homeDir, pushHistory: true);
-                                },
-                              ),
-                            ],
-                          ),
-                        )
-                      : FileListView(
-                          key: _listKey,
-                          entries: _showingResults ? _results : _entries,
-                          mode: _viewMode,
-                          showPathColumn: _showingResults,
-                          canPaste: _clipboard.isNotEmpty && !_showingResults,
-                          onOpen: _open,
-                          onAction: _handleAction,
-                          onDropOn: _showingResults ? null : _dropOnFolder,
-                          onSelectionChanged: (sel) =>
-                              setState(() => _selection = sel),
-                        ),
+    return Column(
+      children: [
+        XpMenuBar(menus: _menus()),
+        _toolbar(),
+        _addressBar(),
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (_searchOpen)
+                SearchPane(
+                  key: _searchKey,
+                  onQuery: _runQuery,
+                  onClose: _toggleSearch,
+                  mood: _mood,
+                  indexStatus: _indexStatus,
+                  currentFolder: _path,
+                  resultCount: _showingResults ? _resultTotal : null,
+                  error: _showingResults ? _searchError : null,
+                  onFocusResults: () => _listKey.currentState?.focusFirst(),
+                  showCompanion: _settings.companionEnabled,
+                )
+              else if (_showFolderTree)
+                FolderTreePane(
+                  currentPath: _path,
+                  showHidden: _settings.showHidden,
+                  onNavigate: (path) => _load(path, pushHistory: true),
+                  onClose: _toggleFolderTree,
+                )
+              else
+                TaskPane(
+                  selection: _selection,
+                  onNavigate: (path) => _load(path, pushHistory: true),
+                  onNewFolder: _newFolder,
+                  onDelete: _selection.isEmpty
+                      ? null
+                      : () => _deleteSelected(_selection),
+                  onRename: _selection.length == 1
+                      ? () => _renameDialog(_selection.first)
+                      : null,
+                  onCopy: _selection.isEmpty
+                      ? null
+                      : () => _handleAction(FileAction.copy, _selection),
                 ),
-              ],
-            ),
+              Expanded(
+                child: _error != null && !_showingResults
+                    ? Container(
+                        color: Colors.white,
+                        alignment: Alignment.center,
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.report_problem,
+                              size: 34,
+                              color: Color(0xFFC08A2E),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              _error!,
+                              textAlign: TextAlign.center,
+                              style: Xp.style(size: 12, color: Xp.dimText),
+                            ),
+                            const SizedBox(height: 12),
+                            XpButton(
+                              label: 'Go to Home',
+                              onTap: () {
+                                _load(FsService.homeDir, pushHistory: true);
+                              },
+                            ),
+                          ],
+                        ),
+                      )
+                    : FileListView(
+                        key: _listKey,
+                        entries: _showingResults ? _results : _entries,
+                        mode: _viewMode,
+                        showPathColumn: _showingResults,
+                        canPaste: _clipboard.isNotEmpty && !_showingResults,
+                        onOpen: _open,
+                        onAction: _handleAction,
+                        onDropOn: _showingResults ? null : _dropOnFolder,
+                        onSelectionChanged: (sel) =>
+                            setState(() => _selection = sel),
+                      ),
+              ),
+            ],
           ),
-          _statusBar(),
-        ],
-      ),
+        ),
+        _statusBar(),
+      ],
     );
   }
 

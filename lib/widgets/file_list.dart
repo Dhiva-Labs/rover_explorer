@@ -53,11 +53,52 @@ class FileListView extends StatefulWidget {
 class FileListViewState extends State<FileListView> {
   final Set<String> _selected = {};
   int _anchorIndex = -1;
-  int _sortCol = 0; // 0 name, 1 size, 2 type/path, 3 modified
+
+  /// 0 name, 1 size, 2 type/path, 3 modified; -1 keeps the given order,
+  /// which for search results is relevance (until a header is clicked).
+  late int _sortCol = widget.showPathColumn ? -1 : 0;
   bool _sortAsc = true;
+
+  final _focusNode = FocusNode(debugLabel: 'file list');
+  final _scroll = ScrollController();
+  int _gridColumns = 1;
+
+  static const _rowHeight = 22.0;
+  static const _tileHeight = 86.0;
+  static const _tileGap = 4.0;
+
+  @override
+  void didUpdateWidget(FileListView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.showPathColumn != widget.showPathColumn) {
+      _sortCol = widget.showPathColumn ? -1 : 0;
+      _sortAsc = true;
+    }
+    if (!identical(oldWidget.entries, widget.entries)) _anchorIndex = -1;
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Gives the list keyboard focus (Del, F2, arrows, Ctrl+A...).
+  void focusList() => _focusNode.requestFocus();
+
+  /// Selects the first entry if nothing is selected, and focuses the list —
+  /// how the search box hands over to its results.
+  void focusFirst() {
+    focusList();
+    final list = _sorted;
+    if (list.isEmpty || _selected.isNotEmpty) return;
+    _select(0, list[0]);
+  }
 
   List<FileEntry> get _sorted {
     final list = List<FileEntry>.from(widget.entries);
+    if (_sortCol < 0) return list;
     int cmp(FileEntry a, FileEntry b) {
       // Folders always group before files, like classic Explorer.
       if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
@@ -96,7 +137,54 @@ class FileListViewState extends State<FileListView> {
 
   void _notify() => widget.onSelectionChanged?.call(selectedEntries);
 
+  void _select(int index, FileEntry e) {
+    setState(() {
+      _selected
+        ..clear()
+        ..add(e.path);
+      _anchorIndex = index;
+    });
+    _notify();
+    _reveal(index);
+  }
+
+  /// Arrow-key selection: moves one row (or one grid row up/down in icons
+  /// view) from the anchor.
+  void _step(int delta) {
+    final list = _sorted;
+    if (list.isEmpty) return;
+    var i = _anchorIndex < 0 || _anchorIndex >= list.length
+        ? (delta > 0 ? 0 : list.length - 1)
+        : _anchorIndex + delta;
+    i = i.clamp(0, list.length - 1);
+    _select(i, list[i]);
+  }
+
+  void _reveal(int index) {
+    if (!_scroll.hasClients) return;
+    final pos = _scroll.position;
+    final double top;
+    final double extent;
+    if (widget.mode == ViewMode.details) {
+      top = index * _rowHeight;
+      extent = _rowHeight;
+    } else {
+      top = 10 + (index ~/ _gridColumns) * (_tileHeight + _tileGap);
+      extent = _tileHeight;
+    }
+    double? to;
+    if (top < pos.pixels) {
+      to = top;
+    } else if (top + extent > pos.pixels + pos.viewportDimension) {
+      to = top + extent - pos.viewportDimension;
+    }
+    if (to != null) {
+      _scroll.jumpTo(to.clamp(pos.minScrollExtent, pos.maxScrollExtent));
+    }
+  }
+
   void _tapItem(int index, FileEntry e) {
+    focusList();
     final keys = HardwareKeyboard.instance.logicalKeysPressed;
     final ctrl =
         keys.contains(LogicalKeyboardKey.controlLeft) ||
@@ -230,21 +318,37 @@ class FileListViewState extends State<FileListView> {
   @override
   Widget build(BuildContext context) {
     return Focus(
+      focusNode: _focusNode,
       autofocus: true,
       onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+          return KeyEventResult.ignored;
+        }
+        // Arrows auto-repeat; everything else acts once per press.
+        final key = event.logicalKey;
+        final down = key == LogicalKeyboardKey.arrowDown;
+        final up = key == LogicalKeyboardKey.arrowUp;
+        final left = key == LogicalKeyboardKey.arrowLeft;
+        final right = key == LogicalKeyboardKey.arrowRight;
+        final alt = HardwareKeyboard.instance.isAltPressed;
+        if (!alt && (down || up)) {
+          final rowStep = widget.mode == ViewMode.icons ? _gridColumns : 1;
+          _step(down ? rowStep : -rowStep);
+          return KeyEventResult.handled;
+        }
+        if (!alt && widget.mode == ViewMode.icons && (left || right)) {
+          _step(right ? 1 : -1);
+          return KeyEventResult.handled;
+        }
         if (event is! KeyDownEvent) return KeyEventResult.ignored;
         final ctrl = HardwareKeyboard.instance.isControlPressed;
         final sel = selectedEntries;
-        if (event.logicalKey == LogicalKeyboardKey.delete && sel.isNotEmpty) {
+        if (key == LogicalKeyboardKey.delete && sel.isNotEmpty) {
           widget.onAction(FileAction.delete, sel);
           return KeyEventResult.handled;
         }
-        if (event.logicalKey == LogicalKeyboardKey.f2 && sel.length == 1) {
+        if (key == LogicalKeyboardKey.f2 && sel.length == 1) {
           widget.onAction(FileAction.rename, sel);
-          return KeyEventResult.handled;
-        }
-        if (event.logicalKey == LogicalKeyboardKey.f5) {
-          widget.onAction(FileAction.refresh, const []);
           return KeyEventResult.handled;
         }
         if (ctrl &&
@@ -286,8 +390,14 @@ class FileListViewState extends State<FileListView> {
       },
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: clearSelection,
-        onSecondaryTapUp: (d) => _showContext(d.globalPosition, null),
+        onTap: () {
+          focusList();
+          clearSelection();
+        },
+        onSecondaryTapUp: (d) {
+          focusList();
+          _showContext(d.globalPosition, null);
+        },
         child: Container(
           color: Colors.white,
           child: widget.mode == ViewMode.details ? _details() : _icons(),
@@ -388,8 +498,9 @@ class FileListViewState extends State<FileListView> {
                   ),
                   Expanded(
                     child: ListView.builder(
+                      controller: _scroll,
                       itemCount: list.length,
-                      itemExtent: 22,
+                      itemExtent: _rowHeight,
                       itemBuilder: (context, i) {
                         final e = list[i];
                         final selected = _selected.contains(e.path);
@@ -398,8 +509,10 @@ class FileListViewState extends State<FileListView> {
                           GestureDetector(
                             onTap: () => _tapItem(i, e),
                             onDoubleTap: () => widget.onOpen(e),
-                            onSecondaryTapUp: (d) =>
-                                _showContext(d.globalPosition, e),
+                            onSecondaryTapUp: (d) {
+                              focusList();
+                              _showContext(d.globalPosition, e);
+                            },
                             child: Container(
                               color: selected
                                   ? Xp.selection
@@ -498,13 +611,25 @@ class FileListViewState extends State<FileListView> {
 
   Widget _icons() {
     final list = _sorted;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Same column count the max-extent delegate below arrives at.
+        final usable = constraints.maxWidth - 20;
+        _gridColumns = usable <= 0 ? 1 : (usable / (96 + _tileGap)).ceil();
+        return _iconsGrid(list);
+      },
+    );
+  }
+
+  Widget _iconsGrid(List<FileEntry> list) {
     return GridView.builder(
+      controller: _scroll,
       padding: const EdgeInsets.all(10),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 96,
-        mainAxisExtent: 86,
-        crossAxisSpacing: 4,
-        mainAxisSpacing: 4,
+        mainAxisExtent: _tileHeight,
+        crossAxisSpacing: _tileGap,
+        mainAxisSpacing: _tileGap,
       ),
       itemCount: list.length,
       itemBuilder: (context, i) {
@@ -515,7 +640,10 @@ class FileListViewState extends State<FileListView> {
           GestureDetector(
             onTap: () => _tapItem(i, e),
             onDoubleTap: () => widget.onOpen(e),
-            onSecondaryTapUp: (d) => _showContext(d.globalPosition, e),
+            onSecondaryTapUp: (d) {
+              focusList();
+              _showContext(d.globalPosition, e);
+            },
             child: Column(
               children: [
                 Container(
