@@ -105,13 +105,15 @@ class FsService {
     return target;
   }
 
-  static Future<void> rename(String path, String newName) async {
+  /// Renames [path] to [newName] in the same folder; returns the new path.
+  static Future<String> rename(String path, String newName) async {
     final target = p.join(p.dirname(path), newName);
     if (FileSystemEntity.isDirectorySync(path)) {
       await Directory(path).rename(target);
     } else {
       await File(path).rename(target);
     }
+    return target;
   }
 
   static Future<void> delete(String path) async {

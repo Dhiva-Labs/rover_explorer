@@ -34,6 +34,14 @@ class FileListView extends StatefulWidget {
   final void Function(List<FileEntry> dragged, FileEntry target)? onDropOn;
   final bool canPaste;
 
+  /// Show [entries] in the order given (search results come best match
+  /// first) instead of sorting them, until a column header is clicked.
+  final bool preserveOrder;
+
+  /// Keyboard focus of the list; the owner can hand it back after a text
+  /// field had it. The list makes its own when none is given.
+  final FocusNode? focusNode;
+
   const FileListView({
     super.key,
     required this.entries,
@@ -44,6 +52,8 @@ class FileListView extends StatefulWidget {
     this.onDropOn,
     this.showPathColumn = false,
     this.canPaste = false,
+    this.preserveOrder = false,
+    this.focusNode,
   });
 
   @override
@@ -55,9 +65,31 @@ class FileListViewState extends State<FileListView> {
   int _anchorIndex = -1;
   int _sortCol = 0; // 0 name, 1 size, 2 type/path, 3 modified
   bool _sortAsc = true;
+  bool _userSorted = false; // a header was clicked while preserving order
+  FocusNode? _ownFocus;
+
+  FocusNode get _focus =>
+      widget.focusNode ?? (_ownFocus ??= FocusNode(debugLabel: 'file list'));
+
+  @override
+  void didUpdateWidget(FileListView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Switching between browsing and search results starts afresh: results
+    // come best match first again, folders sort by name again.
+    if (widget.preserveOrder != oldWidget.preserveOrder) _userSorted = false;
+  }
+
+  @override
+  void dispose() {
+    _ownFocus?.dispose();
+    super.dispose();
+  }
+
+  bool get _keepGivenOrder => widget.preserveOrder && !_userSorted;
 
   List<FileEntry> get _sorted {
     final list = List<FileEntry>.from(widget.entries);
+    if (_keepGivenOrder) return list;
     int cmp(FileEntry a, FileEntry b) {
       // Folders always group before files, like classic Explorer.
       if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
@@ -97,6 +129,7 @@ class FileListViewState extends State<FileListView> {
   void _notify() => widget.onSelectionChanged?.call(selectedEntries);
 
   void _tapItem(int index, FileEntry e) {
+    _focus.requestFocus();
     final keys = HardwareKeyboard.instance.logicalKeysPressed;
     final ctrl =
         keys.contains(LogicalKeyboardKey.controlLeft) ||
@@ -230,6 +263,7 @@ class FileListViewState extends State<FileListView> {
   @override
   Widget build(BuildContext context) {
     return Focus(
+      focusNode: _focus,
       autofocus: true,
       onKeyEvent: (node, event) {
         if (event is! KeyDownEvent) return KeyEventResult.ignored;
@@ -286,7 +320,10 @@ class FileListViewState extends State<FileListView> {
       },
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: clearSelection,
+        onTap: () {
+          _focus.requestFocus();
+          clearSelection();
+        },
         onSecondaryTapUp: (d) => _showContext(d.globalPosition, null),
         child: Container(
           color: Colors.white,
@@ -311,7 +348,11 @@ class FileListViewState extends State<FileListView> {
   }) {
     return GestureDetector(
       onTap: () => setState(() {
-        if (_sortCol == col) {
+        if (_keepGivenOrder) {
+          _userSorted = true;
+          _sortCol = col;
+          _sortAsc = true;
+        } else if (_sortCol == col) {
           _sortAsc = !_sortAsc;
         } else {
           _sortCol = col;
@@ -336,7 +377,7 @@ class FileListViewState extends State<FileListView> {
                 child: Text(label, style: Xp.style(size: 11.5)),
               ),
             ),
-            if (_sortCol == col)
+            if (_sortCol == col && !_keepGivenOrder)
               Icon(
                 _sortAsc ? Icons.arrow_drop_up : Icons.arrow_drop_down,
                 size: 14,

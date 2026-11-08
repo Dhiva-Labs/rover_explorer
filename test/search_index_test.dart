@@ -12,8 +12,11 @@ void main() {
   setUp(() async {
     root = Directory.systemTemp.createTempSync('rover_index_test_');
     Directory(p.join(root.path, 'photos')).createSync();
+    // Shares the prefix of 'photos': must stay out of a search in 'photos'.
+    Directory(p.join(root.path, 'photos-old')).createSync();
     Directory(p.join(root.path, 'reports')).createSync();
     File(p.join(root.path, 'photos', 'holiday.png')).writeAsStringSync('x');
+    File(p.join(root.path, 'photos-old', 'holiday.gif')).writeAsStringSync('x');
     File(p.join(root.path, 'photos', 'holiday-2.JPG')).writeAsStringSync('x');
     File(p.join(root.path, 'reports', 'holiday.pdf')).writeAsStringSync('x');
     File(p.join(root.path, 'reports', 'budget.xlsx')).writeAsStringSync('x');
@@ -48,15 +51,23 @@ void main() {
   }
 
   test('indexes the tree and skips dotfiles', () {
-    expect(index.lastStatus.count, greaterThanOrEqualTo(7));
+    expect(index.lastStatus.count, greaterThanOrEqualTo(9));
     expect(index.lastStatus.scanning, isFalse);
   });
 
   test('substring query finds every matching name', () async {
     final r = await run('holiday');
     final names = r.hits.map((h) => h.name).toList();
-    expect(r.totalMatches, 3);
-    expect(names, containsAll(['holiday.png', 'holiday-2.JPG', 'holiday.pdf']));
+    expect(r.totalMatches, 4);
+    expect(
+      names,
+      containsAll([
+        'holiday.png',
+        'holiday-2.JPG',
+        'holiday.pdf',
+        'holiday.gif',
+      ]),
+    );
   });
 
   test('queries are case-insensitive', () async {
@@ -73,7 +84,7 @@ void main() {
 
   test('kind filters restrict results by extension', () async {
     final pics = await run('holiday', kind: SearchKind.pictures);
-    expect(pics.hits.map((h) => h.name), hasLength(2));
+    expect(pics.hits.map((h) => h.name), hasLength(3));
 
     final docs = await run('holiday', kind: SearchKind.documents);
     expect(docs.hits.single.name, 'holiday.pdf');
@@ -84,8 +95,11 @@ void main() {
 
   test('folder filter returns only directories', () async {
     final r = await run('photos', kind: SearchKind.folders);
-    expect(r.hits.single.isDir, isTrue);
-    expect(r.hits.single.name, 'photos');
+    expect(r.hits.every((h) => h.isDir), isTrue);
+    expect(
+      r.hits.map((h) => h.name),
+      unorderedEquals(['photos', 'photos-old']),
+    );
   });
 
   test('underPath scopes the search to one folder', () async {
@@ -96,6 +110,99 @@ void main() {
   test('extra words must also match somewhere in the path', () async {
     final r = await run('holiday reports');
     expect(r.hits.single.name, 'holiday.pdf');
+  });
+
+  test('word order does not change the results', () async {
+    final a = await run('holiday reports');
+    final b = await run('reports holiday');
+    expect(a.hits.single.name, 'holiday.pdf');
+    expect(b.hits.single.name, 'holiday.pdf');
+    expect(b.totalMatches, a.totalMatches);
+  });
+
+  test('"only in current folder" ignores folders sharing the prefix', () async {
+    final r = await run('holiday', under: p.join(root.path, 'photos'));
+    expect(
+      r.hits.map((h) => h.name),
+      unorderedEquals(['holiday.png', 'holiday-2.JPG']),
+    );
+  });
+
+  test('"only in current folder" works outside the indexed roots', () async {
+    final other = Directory.systemTemp.createTempSync('rover_outside_');
+    try {
+      File(p.join(other.path, 'holiday-abroad.txt')).writeAsStringSync('x');
+      final r = await run('holiday', under: other.path);
+      expect(r.hits.single.name, 'holiday-abroad.txt');
+    } finally {
+      other.deleteSync(recursive: true);
+    }
+  });
+
+  test('a rename reported by the app is searchable without a rescan', () async {
+    final old = p.join(root.path, 'reports', 'budget.xlsx');
+    final renamed = p.join(root.path, 'reports', 'forecast.xlsx');
+    File(old).renameSync(renamed);
+    index.changed(removed: [old], added: [renamed]);
+
+    final r = await run('forecast');
+    expect(r.hits.single.path, renamed);
+    final gone = await run('budget');
+    expect(gone.hits, isEmpty);
+  });
+
+  test('a folder removed by the app takes everything under it', () async {
+    final photos = p.join(root.path, 'photos');
+    Directory(photos).deleteSync(recursive: true);
+    index.changed(removed: [photos]);
+
+    final r = await run('holiday');
+    expect(
+      r.hits.map((h) => h.name),
+      unorderedEquals(['holiday.pdf', 'holiday.gif']),
+    );
+  });
+
+  test('a folder added by the app is indexed with its contents', () async {
+    final archive = Directory(p.join(root.path, 'archive'))..createSync();
+    File(p.join(archive.path, 'holiday-1999.zip')).writeAsStringSync('x');
+    index.changed(added: [archive.path]);
+
+    final r = await run('1999');
+    expect(r.hits.single.name, 'holiday-1999.zip');
+    final folders = await run('archive', kind: SearchKind.folders);
+    expect(folders.hits.single.isDir, isTrue);
+  });
+
+  test('a query during the first scan sees what was found so far', () async {
+    // No cache yet and more entries than one scan batch (4000), so the
+    // query is handled while the scan is still running.
+    final big = Directory.systemTemp.createTempSync('rover_first_run_');
+    for (var i = 0; i < 4500; i++) {
+      File(p.join(big.path, 'bulk-$i.txt')).writeAsStringSync('');
+    }
+    final first = SearchIndexService();
+    var scanned = false;
+    final done = first.status.firstWhere((s) {
+      if (s.scanning) scanned = true;
+      return scanned && !s.scanning;
+    });
+    try {
+      await first.start(
+        roots: [big.path],
+        cacheFile: p.join(big.path, '.cache', 'index.txt'),
+      );
+      final id = first.query('bulk');
+      final r = await first.results
+          .firstWhere((x) => x.queryId == id)
+          .timeout(const Duration(seconds: 10));
+      expect(r.totalMatches, greaterThan(0));
+      expect(r.hits.first.name, startsWith('bulk-'));
+      await done.timeout(const Duration(seconds: 30));
+    } finally {
+      first.dispose();
+      big.deleteSync(recursive: true);
+    }
   });
 
   test('hidden files never enter the index', () async {

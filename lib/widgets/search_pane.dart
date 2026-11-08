@@ -26,6 +26,10 @@ class SearchPane extends StatefulWidget {
   /// Options → "Use the animated companion").
   final bool showCompanion;
 
+  /// Focus of the query box, so the owner can put the cursor there when the
+  /// pane opens (and on Ctrl+F). The box focuses itself when none is given.
+  final FocusNode? focusNode;
+
   const SearchPane({
     super.key,
     required this.onQuery,
@@ -35,6 +39,7 @@ class SearchPane extends StatefulWidget {
     required this.currentFolder,
     this.resultCount,
     this.showCompanion = true,
+    this.focusNode,
   });
 
   @override
@@ -189,7 +194,8 @@ class _SearchPaneState extends State<SearchPane> {
                 XpSunken(
                   child: TextField(
                     controller: _controller,
-                    autofocus: true,
+                    focusNode: widget.focusNode,
+                    autofocus: widget.focusNode == null,
                     onChanged: (_) => _fire(),
                     onSubmitted: (_) => _fire(immediate: true),
                     style: Xp.style(size: 12),
