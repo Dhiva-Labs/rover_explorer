@@ -18,7 +18,9 @@ description: |
 grade: stable
 confinement: strict
 license: MIT
-website: https://github.com/Dhiva-Labs/rover_explorer
+website:
+  - https://github.com/Dhiva-Labs/rover_explorer
+  - https://learn.dhivalabs.com/apps/rover-explorer/
 issues: https://github.com/Dhiva-Labs/rover_explorer/issues
 icon: assets/icons/rover-explorer.png
 
