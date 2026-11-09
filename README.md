@@ -6,6 +6,8 @@
 
 **A Windows XP-style file explorer for Linux and Windows — with the search companion dog, and search that is actually instant.**
 
+**Documentation:** step-by-step guides at [learn.dhivalabs.com](https://learn.dhivalabs.com/apps/rover-explorer/): [install](https://learn.dhivalabs.com/apps/rover-explorer/install) · [beginner guide](https://learn.dhivalabs.com/apps/rover-explorer/getting-started) · [troubleshooting](https://learn.dhivalabs.com/apps/rover-explorer/faq).
+
 A [Dhiva Labs](https://github.com/Dhiva-Labs) project · MIT licensed
 
 [![ARM64 builds](https://github.com/Dhiva-Labs/rover_explorer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Dhiva-Labs/rover_explorer/actions/workflows/ci.yml)
