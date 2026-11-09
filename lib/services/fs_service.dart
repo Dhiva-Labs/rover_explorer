@@ -79,7 +79,11 @@ class FsService {
 
   static Future<void> openWithOs(String path) async {
     if (Platform.isWindows) {
-      await Process.start('cmd', ['/c', 'start', '', path], runInShell: false);
+      // Not `cmd /c start`: cmd would interpret &, ^, % and the other
+      // delimiters inside a file name, so "invoice.pdf&calc" ran calc on
+      // double-click. Explorer opens a path with its default handler and
+      // never parses it as a command line.
+      await Process.start('explorer.exe', [path], runInShell: false);
     } else if (Platform.isMacOS) {
       await Process.start('open', [path]);
     } else {
