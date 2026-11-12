@@ -15,6 +15,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Flatpak bundle, plus an AUR recipe (`rover-explorer-bin`). Tagged releases
   include them.
 
+### Fixed
+
+- Search Companion: Backspace in the query box (and in the address bar)
+  deletes a character again instead of going up a folder and hiding the
+  results. Opening the pane, from the toolbar or with `Ctrl+F`, puts the
+  cursor in the query box, and `Ctrl+F` while it is open returns there.
+  Closing the pane hands the keyboard back to the file list, so Backspace,
+  Delete, F2 and `Ctrl+F` keep working without a click first.
+- Search: the words of a query may come in any order (`rover screen` and
+  `screen rover` find the same files); each must appear somewhere in the
+  path and at least one in the file name.
+- Search: clearing the query, closing the pane or leaving the results while
+  a search is still running no longer brings stale results back when it
+  completes.
+- Search: renames, deletes, moves, pastes and new folders made in the app
+  update the index at once instead of after the next full rescan, and files
+  deleted outside the app are dropped from the results (and the index)
+  instead of listing with a 1970 date.
+- Search: on a first run, before the index cache exists, queries are
+  answered from whatever has been scanned so far and run again when the
+  scan completes, instead of staying empty.
+- Search: "Only in current folder" for `~/foo` no longer matches `~/foobar`,
+  and works in folders outside the indexed home folder, which are scanned
+  on the spot.
+- Search: an error inside the background indexer no longer stops every later
+  search. The indexer survives it, every query gets an answer, and the dog
+  stops sniffing after a while even if one did not come.
+- Search results stay in best-match order instead of being re-sorted by
+  name; clicking a column header still sorts them.
+
 ## [1.0.1] - 2026-10-16
 
 Linux and Windows ARM64 builds, Windows fixes and packaging work.

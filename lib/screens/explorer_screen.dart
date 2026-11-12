@@ -25,7 +25,10 @@ import '../xp/xp_theme.dart';
 
 class ExplorerScreen extends StatefulWidget {
   final SearchIndexService index;
-  const ExplorerScreen({super.key, required this.index});
+
+  /// Folder shown first; the home folder when null.
+  final String? initialPath;
+  const ExplorerScreen({super.key, required this.index, this.initialPath});
 
   @override
   State<ExplorerScreen> createState() => _ExplorerScreenState();
@@ -51,6 +54,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   DogMood _mood = DogMood.idle;
   int _pendingQueryId = -1;
   SearchQuerySpec? _lastSpec;
+  Timer? _queryTimeout;
   StreamSubscription<SearchResults>? _resultsSub;
   StreamSubscription<IndexStatus>? _statusSub;
   IndexStatus _indexStatus = const IndexStatus(0, false, false);
@@ -63,22 +67,40 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   final _listKey = GlobalKey<FileListViewState>();
   final _addressController = TextEditingController();
 
+  // Keyboard focus moves between the file list and the search query box
+  // explicitly: shortcuts such as Backspace (up one level) belong to the
+  // list, and typing only reaches the query box while it is focused.
+  final _listFocus = FocusNode(debugLabel: 'file list');
+  final _queryFocus = FocusNode(debugLabel: 'search query');
+
   @override
   void initState() {
     super.initState();
+    if (widget.initialPath != null) _path = widget.initialPath!;
     _indexStatus = widget.index.lastStatus;
     _resultsSub = widget.index.results.listen(_onResults);
     _statusSub = widget.index.status.listen((s) {
-      if (mounted) setState(() => _indexStatus = s);
+      if (!mounted) return;
+      final scanFinished = _indexStatus.scanning && !s.scanning;
+      setState(() => _indexStatus = s);
+      // A query typed while the index was still being built was answered
+      // from whatever had been scanned so far: run it again now that the
+      // scan is complete, so the results fill in by themselves.
+      if (scanFinished && _searchOpen && _lastSpec != null) {
+        _runQuery(_lastSpec!);
+      }
     });
     _load(_path);
   }
 
   @override
   void dispose() {
+    _queryTimeout?.cancel();
     _resultsSub?.cancel();
     _statusSub?.cancel();
     _addressController.dispose();
+    _listFocus.dispose();
+    _queryFocus.dispose();
     super.dispose();
   }
 
@@ -98,6 +120,9 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     } catch (e) {
       error = 'Cannot access this folder.\n$e';
     }
+    // Leaving the results: a search still in flight must not bring them
+    // back when it completes.
+    _dropPendingQuery();
     setState(() {
       if (pushHistory && path != _path) {
         _back.add(_path);
@@ -107,6 +132,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
       _entries = entries ?? [];
       _error = error;
       _showingResults = false;
+      _mood = DogMood.idle;
       _selection = [];
       _addressController.text = path;
       if (error == null) _pushRecent(path);
@@ -137,6 +163,9 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   void _runQuery(SearchQuerySpec spec) {
     _lastSpec = spec;
     if (spec.text.trim().isEmpty && spec.kind == SearchKind.all) {
+      // Cleared: forget any search still running, so its results do not
+      // reappear once they arrive.
+      _dropPendingQuery();
       setState(() {
         _showingResults = false;
         _results = [];
@@ -151,40 +180,50 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
       kind: spec.kind,
       underPath: spec.currentFolderOnly ? _path : null,
     );
+    // The indexer answers every query, even after an internal error; should
+    // it ever fail to, the dog must not keep sniffing forever.
+    _queryTimeout?.cancel();
+    _queryTimeout = Timer(const Duration(seconds: 15), () {
+      if (mounted && _mood == DogMood.searching) {
+        setState(() => _mood = DogMood.idle);
+      }
+    });
+  }
+
+  void _dropPendingQuery() {
+    _pendingQueryId = -1;
+    _queryTimeout?.cancel();
   }
 
   void _onResults(SearchResults r) {
     if (r.queryId != _pendingQueryId || !_searchOpen) return;
+    _queryTimeout?.cancel();
     final entries = <FileEntry>[];
+    final gone = <String>[];
     for (final h in r.hits) {
-      try {
-        final stat = FileStat.statSync(h.path);
-        entries.add(
-          FileEntry(
-            path: h.path,
-            name: h.name,
-            isDir: h.isDir,
-            size: h.isDir ? 0 : stat.size,
-            modified: stat.modified,
-          ),
-        );
-      } catch (_) {
-        entries.add(
-          FileEntry(
-            path: h.path,
-            name: h.name,
-            isDir: h.isDir,
-            size: 0,
-            modified: DateTime.fromMillisecondsSinceEpoch(0),
-          ),
-        );
+      final stat = FileStat.statSync(h.path);
+      if (stat.type == FileSystemEntityType.notFound) {
+        // Deleted outside the app since the index saw it: not a result, and
+        // the index can forget it right away.
+        gone.add(h.path);
+        continue;
       }
+      entries.add(
+        FileEntry(
+          path: h.path,
+          name: h.name,
+          isDir: h.isDir,
+          size: h.isDir ? 0 : stat.size,
+          modified: stat.modified,
+        ),
+      );
     }
+    if (gone.isNotEmpty) widget.index.changed(removed: gone);
     setState(() {
       _results = entries;
-      _resultTotal = r.totalMatches;
+      _resultTotal = r.totalMatches - gone.length;
       _showingResults = true;
-      _mood = r.hits.isEmpty ? DogMood.idle : DogMood.found;
+      _mood = entries.isEmpty ? DogMood.idle : DogMood.found;
     });
   }
 
@@ -204,7 +243,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
         if (sel.isNotEmpty) await _open(sel.first);
       case FileAction.openLocation:
         if (sel.isNotEmpty) {
-          setState(() => _searchOpen = false);
+          _closeSearch();
           _load(p.dirname(sel.first.path), pushHistory: true);
         }
       case FileAction.copy:
@@ -237,18 +276,22 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   Future<void> _paste() async {
     if (_clipboard.isEmpty) return;
     final errors = <String>[];
+    final removed = <String>[];
+    final added = <String>[];
     for (final src in _clipboard) {
       try {
         if (_clipIsCut) {
-          await FsService.moveInto(src, _path);
+          added.add(await FsService.moveInto(src, _path));
+          removed.add(src);
         } else {
-          await FsService.copyInto(src, _path);
+          added.add(await FsService.copyInto(src, _path));
         }
       } catch (e) {
         errors.add('${p.basename(src)}: $e');
       }
     }
     if (_clipIsCut) _clipboard = [];
+    widget.index.changed(removed: removed, added: added);
     _load(_path);
     if (errors.isNotEmpty && mounted) {
       await xpAlert(
@@ -262,6 +305,8 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   /// Drag & drop: move dropped items into [target].
   Future<void> _dropOnFolder(List<FileEntry> dragged, FileEntry target) async {
     final errors = <String>[];
+    final removed = <String>[];
+    final added = <String>[];
     for (final e in dragged) {
       if (p.equals(e.path, target.path)) continue;
       if (e.isDir && p.isWithin(e.path, target.path)) {
@@ -269,11 +314,13 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
         continue;
       }
       try {
-        await FsService.moveInto(e.path, target.path);
+        added.add(await FsService.moveInto(e.path, target.path));
+        removed.add(e.path);
       } catch (err) {
         errors.add('${e.name}: $err');
       }
     }
+    widget.index.changed(removed: removed, added: added);
     _refresh();
     if (errors.isNotEmpty && mounted) {
       await xpAlert(
@@ -295,13 +342,16 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     );
     if (ok != true) return;
     final errors = <String>[];
+    final removed = <String>[];
     for (final e in sel) {
       try {
         await FsService.delete(e.path);
+        removed.add(e.path);
       } catch (err) {
         errors.add('${e.name}: $err');
       }
     }
+    widget.index.changed(removed: removed);
     _refresh();
     if (errors.isNotEmpty && mounted) {
       await xpAlert(
@@ -320,7 +370,8 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     );
     if (newName == null || newName.isEmpty || newName == e.name) return;
     try {
-      await FsService.rename(e.path, newName);
+      final renamed = await FsService.rename(e.path, newName);
+      widget.index.changed(removed: [e.path], added: [renamed]);
     } catch (err) {
       if (mounted) await xpAlert(context, 'Could not rename: $err');
     }
@@ -329,7 +380,8 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
 
   Future<void> _newFolder() async {
     try {
-      await FsService.newFolder(_path);
+      final created = await FsService.newFolder(_path);
+      widget.index.changed(added: [created]);
       _load(_path);
     } catch (e) {
       if (mounted) await xpAlert(context, 'Could not create folder: $e');
@@ -536,27 +588,47 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   }
 
   void _toggleFolderTree() {
+    final show = !_showFolderTree;
+    if (show && _searchOpen) _closeSearch();
+    setState(() => _showFolderTree = show);
+  }
+
+  void _toggleSearch() => _searchOpen ? _closeSearch() : _openSearch();
+
+  void _openSearch() {
     setState(() {
-      _showFolderTree = !_showFolderTree;
-      if (_showFolderTree) {
-        _searchOpen = false;
-        _showingResults = false;
-        _mood = DogMood.idle;
-      }
+      _searchOpen = true;
+      _showFolderTree = false;
+    });
+    _focusQuery();
+  }
+
+  /// Puts the cursor in the query box, once the pane has been built.
+  void _focusQuery() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _searchOpen) _queryFocus.requestFocus();
     });
   }
 
-  void _toggleSearch() {
+  void _closeSearch() {
+    _dropPendingQuery();
     setState(() {
-      _searchOpen = !_searchOpen;
-      if (_searchOpen) {
-        _showFolderTree = false;
-      } else {
-        _showingResults = false;
-        _mood = DogMood.idle;
-      }
+      _searchOpen = false;
+      _showingResults = false;
+      _mood = DogMood.idle;
     });
+    // The query box leaves with the keyboard focus: hand it back to the
+    // file list, or Backspace, Delete, F2 and Ctrl+F stop working until
+    // something is clicked.
+    _listFocus.requestFocus();
   }
+
+  /// True while a text field (the query box, the address bar) is being
+  /// typed in; editing keys then belong to it.
+  bool get _editingText =>
+      FocusManager.instance.primaryFocus?.context
+          ?.findAncestorWidgetOfExactType<EditableText>() !=
+      null;
 
   // ------------------------------- build ---------------------------------
 
@@ -576,8 +648,13 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
           _goForward();
           return KeyEventResult.handled;
         }
-        if ((alt && event.logicalKey == LogicalKeyboardKey.arrowUp) ||
-            event.logicalKey == LogicalKeyboardKey.backspace) {
+        if (alt && event.logicalKey == LogicalKeyboardKey.arrowUp) {
+          _goUp();
+          return KeyEventResult.handled;
+        }
+        // Backspace deletes a character in the query box or the address
+        // bar; it only goes up a folder when nothing is being typed in.
+        if (event.logicalKey == LogicalKeyboardKey.backspace && !_editingText) {
           _goUp();
           return KeyEventResult.handled;
         }
@@ -586,7 +663,11 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
           return KeyEventResult.handled;
         }
         if (ctrl && event.logicalKey == LogicalKeyboardKey.keyF) {
-          if (!_searchOpen) _toggleSearch();
+          if (_searchOpen) {
+            _focusQuery();
+          } else {
+            _openSearch();
+          }
           return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
@@ -602,8 +683,9 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
               children: [
                 if (_searchOpen)
                   SearchPane(
+                    focusNode: _queryFocus,
                     onQuery: _runQuery,
-                    onClose: _toggleSearch,
+                    onClose: _closeSearch,
                     mood: _mood,
                     indexStatus: _indexStatus,
                     currentFolder: _path,
@@ -664,9 +746,11 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
                         )
                       : FileListView(
                           key: _listKey,
+                          focusNode: _listFocus,
                           entries: _showingResults ? _results : _entries,
                           mode: _viewMode,
                           showPathColumn: _showingResults,
+                          preserveOrder: _showingResults,
                           canPaste: _clipboard.isNotEmpty && !_showingResults,
                           onOpen: _open,
                           onAction: _handleAction,
@@ -861,6 +945,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     final t = value.trim();
     if (t.isNotEmpty && Directory(t).existsSync()) {
       _load(t, pushHistory: true);
+      _listFocus.requestFocus();
       return;
     }
     if (t.isNotEmpty && File(t).existsSync()) {

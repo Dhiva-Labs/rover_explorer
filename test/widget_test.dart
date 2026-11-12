@@ -109,6 +109,35 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
   });
 
+  testWidgets('search results keep their best-match order', (tester) async {
+    final entries = sampleEntries();
+    // Best match first: a file before a folder, names out of alphabetical
+    // order. Browsing would show Zebra (folder) first.
+    final ranked = [entries[2], entries[0], entries[1]];
+    await tester.pumpWidget(
+      host(
+        FileListView(
+          entries: ranked,
+          mode: ViewMode.details,
+          showPathColumn: true,
+          preserveOrder: true,
+          onOpen: (_) {},
+          onAction: (_, _) {},
+        ),
+      ),
+    );
+    await tester.pump();
+
+    double y(String name) => tester.getTopLeft(find.text(name)).dy;
+    expect(y('beta.mp3'), lessThan(y('Zebra')));
+    expect(y('Zebra'), lessThan(y('apple.txt')));
+
+    // Clicking a header sorts as usual.
+    await tester.tap(find.text('Name'));
+    await tester.pump();
+    expect(y('apple.txt'), lessThan(y('beta.mp3')));
+  });
+
   testWidgets('icons view lays entries out in a grid', (tester) async {
     await tester.pumpWidget(
       host(
